@@ -95,7 +95,7 @@ fn parse_transcript(body: &str) -> Result<String> {
 
 /// Pull `error.message` out of an error body when it is there, so the popup
 /// shows "Incorrect API key provided" rather than a wall of JSON.
-fn describe_error(body: &str) -> String {
+pub(crate) fn describe_error(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|value| {

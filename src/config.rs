@@ -47,6 +47,12 @@ pub struct WhisprConfig {
     pub trailing_space: bool,
     /// Hard cap on a single recording, as a runaway-microphone guard.
     pub max_seconds: u64,
+    /// Run the transcript through a small chat model to strip filler words,
+    /// stutters, and false starts. Costs a second round trip (~1 s).
+    pub cleanup: bool,
+    /// Model used for that second pass. It must be cheap, fast, and hard to
+    /// talk out of its instructions — see `cleanup.rs`.
+    pub cleanup_model: String,
 }
 
 impl Default for WhisprConfig {
@@ -62,6 +68,8 @@ impl Default for WhisprConfig {
             type_delay_ms: 4,
             trailing_space: true,
             max_seconds: 300,
+            cleanup: true,
+            cleanup_model: "gpt-5.4-nano".into(),
         }
     }
 }
@@ -135,6 +143,11 @@ impl WhisprConfig {
             "{}/audio/transcriptions",
             self.api_base.trim_end_matches('/')
         )
+    }
+
+    /// `{api_base}/chat/completions`, for the cleanup pass.
+    pub fn chat_url(&self) -> String {
+        format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
     }
 }
 

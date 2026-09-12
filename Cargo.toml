@@ -31,6 +31,9 @@ rustix = { version = "1", features = ["fs"] }
 
 tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic"
 default-features = false

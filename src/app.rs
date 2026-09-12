@@ -17,7 +17,7 @@ use cosmic::widget::{
 use cosmic::{Element, cosmic_config};
 
 use crate::config::{APP_ID, WhisprConfig};
-use crate::{audio, ipc, stt, typer};
+use crate::{audio, cleanup, ipc, stt, typer};
 
 /// How often the level meter and elapsed timer refresh while recording.
 const TICK: Duration = Duration::from_millis(100);
@@ -108,6 +108,8 @@ pub enum Message {
     DeviceSelected(usize),
     TypeDelaySelected(usize),
     TrailingSpaceToggled(bool),
+    CleanupToggled(bool),
+    CleanupModelChanged(String),
 }
 
 impl cosmic::Application for Whispr {
@@ -253,6 +255,10 @@ impl cosmic::Application for Whispr {
             }
             Message::TrailingSpaceToggled(value) => {
                 return self.edit(|config| config.trailing_space = value);
+            }
+            Message::CleanupToggled(value) => return self.edit(|config| config.cleanup = value),
+            Message::CleanupModelChanged(value) => {
+                return self.edit(|config| config.cleanup_model = value);
             }
         }
 
@@ -405,6 +411,9 @@ impl Whispr {
         let model = config.model.clone();
         let language = Some(config.language.clone()).filter(|value| !value.is_empty());
         let prompt = Some(config.prompt.clone()).filter(|value| !value.is_empty());
+        let cleanup_enabled = config.cleanup;
+        let cleanup_url = config.chat_url();
+        let cleanup_model = config.cleanup_model.clone();
 
         Task::perform(
             async move {
@@ -416,14 +425,30 @@ impl Whispr {
 
                 let request = stt::Request {
                     url,
-                    api_key,
+                    api_key: api_key.clone(),
                     model,
                     language,
                     prompt,
                 };
-                stt::transcribe(request, recording.wav)
+                let transcript = stt::transcribe(request, recording.wav)
                     .await
-                    .map_err(|error| format!("{error:#}"))
+                    .map_err(|error| format!("{error:#}"))?;
+
+                if !cleanup_enabled || transcript.is_empty() {
+                    return Ok(transcript);
+                }
+
+                // Never fails: a cleanup problem falls back to the raw
+                // transcript rather than losing what was dictated.
+                Ok(cleanup::clean_or_keep(
+                    cleanup::Request {
+                        url: cleanup_url,
+                        api_key,
+                        model: cleanup_model,
+                    },
+                    transcript,
+                )
+                .await)
             },
             |result| cosmic::Action::App(Message::Transcribed(result)),
         )
@@ -621,6 +646,15 @@ impl Whispr {
                     Message::Surface,
                     |message| message,
                 ),
+            ))
+            .add(settings::item(
+                "Clean up filler words",
+                toggler(self.config.cleanup).on_toggle(Message::CleanupToggled),
+            ))
+            .add(settings::item(
+                "Cleanup model",
+                text_input("gpt-5.4-nano", &self.config.cleanup_model)
+                    .on_input(Message::CleanupModelChanged),
             ))
             .add(settings::item(
                 "Trailing space",

@@ -8,6 +8,7 @@
 
 mod app;
 mod audio;
+mod cleanup;
 mod config;
 mod ipc;
 mod secret;
@@ -91,6 +92,18 @@ fn check() {
 
     println!("endpoint:    {}", configuration.transcription_url());
     println!("model:       {}", configuration.model);
+    println!(
+        "cleanup:     {}",
+        if configuration.cleanup {
+            format!(
+                "{} via {}",
+                configuration.cleanup_model,
+                configuration.chat_url()
+            )
+        } else {
+            "off".to_string()
+        }
+    );
 
     let env_file = configuration.env_file_path();
     match std::fs::read_to_string(&env_file) {
