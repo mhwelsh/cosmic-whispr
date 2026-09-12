@@ -1,0 +1,41 @@
+[package]
+name = "cosmic-whispr"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+description = "COSMIC panel applet for dictation: microphone -> 16 kHz mono WAV -> speech-to-text -> typed into the focused window"
+license = "MPL-2.0"
+
+[dependencies]
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Microphone capture
+cpal = "0.18"
+hound = "3.5"
+
+# Speech-to-text over an OpenAI-compatible HTTP endpoint
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "multipart",
+    "rustls-tls",
+] }
+
+# Typing into the focused window via the Wayland virtual-keyboard protocol
+wayland-client = "0.31"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+rustix = { version = "1", features = ["fs"] }
+
+tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util"] }
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+default-features = false
+features = ["applet", "tokio", "a11y", "dbus-config"]
+
+[profile.release]
+lto = "thin"
+strip = true

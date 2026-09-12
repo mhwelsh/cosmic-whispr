@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Whispr Dictation
+Comment=Dictate with your microphone; the transcript is typed into the focused window
+Type=Application
+Exec=cosmic-whispr
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Applet;Dictation;Speech;Microphone;Transcription;Voice;
+Icon=audio-input-microphone-symbolic
+StartupNotify=true
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicShrinkable=true
+X-CosmicHoverPopup=End
