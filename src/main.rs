@@ -64,7 +64,7 @@ into the settings popup, or pipe it in so it never reaches your shell history:
 To take it from 1Password instead, give the reference and the key is fetched
 once and saved to the keyring — `op` never runs while you are dictating:
 
-    cosmic-whispr --set-key-from op://Private/OpenAI/credential
+    cosmic-whispr --set-key-from op://Private/openai-api/credential
 
 With no reference, the one in the applet settings is used, so re-importing
 after a rotation is just:
@@ -191,8 +191,29 @@ fn check() {
         (None, _) => println!("in use:      NOT SET — see --help"),
     }
 
-    // The key used to live here. Say so rather than importing it silently:
-    // the file may be shared with other tools, so removing it is not ours.
+    // An older version also kept the key in the config itself. Nothing reads
+    // that file now, and nothing deleted it, so a plain-text key can be
+    // sitting there while this build claims the key lives in the keyring and
+    // nowhere else. Say so; deleting a file we no longer own is not ours.
+    if let Some(stale) = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|home| {
+            home.join(".config/cosmic")
+                .join(config::APP_ID)
+                .join(format!("v{}", config::CONFIG_VERSION))
+                .join("api_key")
+        })
+        .filter(|path| path.exists())
+    {
+        println!(
+            "warning:     {} still holds a plain-text key — delete it, and treat that key as burned",
+            stale.display()
+        );
+    }
+
+    // The key used to live here too. Say so rather than importing it
+    // silently: the file may be shared with other tools, so removing it is
+    // not ours.
     let legacy = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))

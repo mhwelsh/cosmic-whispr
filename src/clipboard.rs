@@ -40,12 +40,19 @@ pub fn copy(text: &str) -> Result<()> {
         bail!("there is nothing to copy");
     }
 
+    // stderr is discarded rather than captured, which costs a diagnostic and
+    // buys the function returning at all. `wl-copy` forks a process to serve
+    // the selection, and that process inherits whatever pipes we hand it — so
+    // reading its output to end-of-file, which is what `wait_with_output`
+    // does, waits for a writer that stays alive until the selection is
+    // replaced. Measured: it never returns, the applet stays in
+    // `Status::Delivering` for good, and every later shortcut is ignored.
     let mut child = Command::new("wl-copy")
         .arg("--type")
         .arg("text/plain;charset=utf-8")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => anyhow!(
@@ -66,19 +73,12 @@ pub fn copy(text: &str) -> Result<()> {
         .context("cannot hand the transcript to wl-copy")?;
     drop(stdin);
 
-    // Returns as soon as it has forked the process that serves the data, so
-    // there is nothing long-running to wait on here.
-    let output = child
-        .wait_with_output()
-        .context("cannot wait for wl-copy")?;
-    if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr);
-        let message = message.trim();
-        bail!(if message.is_empty() {
-            format!("wl-copy failed with {}", output.status)
-        } else {
-            message.to_string()
-        });
+    // `wait`, not `wait_with_output`: this waits for the parent to exit,
+    // which it does as soon as it has forked the server, and never touches
+    // the inherited pipes.
+    let status = child.wait().context("cannot wait for wl-copy")?;
+    if !status.success() {
+        bail!("wl-copy failed with {status}");
     }
 
     Ok(())
@@ -96,11 +96,21 @@ mod tests {
 
     /// Needs a Wayland session with wl-clipboard installed, so it is not part
     /// of the default run.
+    ///
+    /// Also the regression test for the hang: `copy` returning at all is half
+    /// of what this asserts, and the reason the timing is checked.
     #[test]
     #[ignore = "requires a Wayland session and wl-clipboard"]
     fn round_trips_through_the_clipboard() {
         let phrase = "cosmic-whispr clipboard round trip 0123456789";
+
+        let started = std::time::Instant::now();
         copy(phrase).expect("copy");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "copy took {elapsed:?}; it is waiting on the forked server again"
+        );
 
         let pasted = Command::new("wl-paste")
             .arg("--no-newline")

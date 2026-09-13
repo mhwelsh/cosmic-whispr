@@ -87,6 +87,7 @@ pub struct Whispr {
     /// can borrow it for a render.
     device_labels: Vec<String>,
     can_type: bool,
+    can_copy: bool,
     /// What the user has typed into the API key box. Deliberately transient:
     /// it is wiped the moment the key reaches the keyring, and is never
     /// written to the config.
@@ -172,6 +173,10 @@ impl cosmic::Application for Whispr {
         let (config_handle, config) = WhisprConfig::load();
         let devices = audio::input_devices();
         let can_type = typer::is_available();
+        let can_copy = clipboard::is_available();
+        if !can_copy {
+            tracing::warn!("wl-copy is missing; --clipboard dictations cannot be delivered");
+        }
         if !can_type {
             tracing::warn!(
                 "zwp_virtual_keyboard_manager_v1 is missing; transcripts cannot be typed"
@@ -194,6 +199,7 @@ impl cosmic::Application for Whispr {
                 .collect(),
             devices,
             can_type,
+            can_copy,
             key_input: Zeroizing::new(String::new()),
             key_hidden: true,
             key_status: secret::Status::Empty,
@@ -331,6 +337,12 @@ impl cosmic::Application for Whispr {
                 return self.edit(|config| config.op_reference = value);
             }
             Message::SaveKey => {
+                // Checked here, not just on the button: the field's `on_submit`
+                // has no idea whether a save is already running, and a second
+                // Enter would race a second keyring write against the first.
+                if self.key_busy {
+                    return Task::none();
+                }
                 // Copy rather than take: storing fails on a locked or absent
                 // keyring, and emptying the box first would send the user
                 // back to 1Password to copy the key again.
@@ -342,6 +354,11 @@ impl cosmic::Application for Whispr {
                 return store_key(move || secret::store(&key));
             }
             Message::ImportKey => {
+                // Same reason as `SaveKey`, and worse here: a second import
+                // means a second biometric prompt.
+                if self.key_busy {
+                    return Task::none();
+                }
                 let reference = self.config.op_reference.clone();
                 if reference.trim().is_empty() {
                     return Task::none();
@@ -706,6 +723,15 @@ impl Whispr {
             )));
         }
 
+        // Said before a dictation rather than after: a --clipboard recording
+        // that cannot be delivered still costs a transcription.
+        if !self.can_copy {
+            content = content.push(cosmic::applet::padded_control(text::caption(
+                "wl-clipboard is not installed, so --clipboard dictations \
+                 cannot be delivered. Install it, or dictate without it to type.",
+            )));
+        }
+
         if let Some(error) = &self.error {
             content = content.push(cosmic::applet::padded_control(
                 row::with_capacity(2)
@@ -831,7 +857,7 @@ impl Whispr {
             .spacing(spacing.space_xxs)
             .align_y(Alignment::Center)
             .push(
-                text_input("op://Private/OpenAI/credential", &self.config.op_reference)
+                text_input("op://Private/openai-api/credential", &self.config.op_reference)
                     .width(Length::Fill)
                     .on_input(Message::OpReferenceChanged)
                     .on_submit(|_| Message::ImportKey),

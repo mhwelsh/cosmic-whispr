@@ -32,7 +32,7 @@ Then add **Whispr Dictation** in *Settings → Desktop → Panel → Applets*, a
 set up the API key:
 
 ```sh
-cosmic-whispr --set-key-from op://Private/OpenAI/credential   # or --set-key
+cosmic-whispr --set-key-from op://Private/openai-api/credential   # or --set-key
 cosmic-whispr --check
 ```
 
@@ -83,8 +83,8 @@ Three ways to put it there, all equivalent:
 
 ```sh
 cosmic-whispr --set-key < key.txt                             # from a file
-pbpaste | cosmic-whispr --set-key                             # from the clipboard
-cosmic-whispr --set-key-from op://Private/OpenAI/credential   # from 1Password
+wl-paste | cosmic-whispr --set-key                            # from the clipboard
+cosmic-whispr --set-key-from op://Private/openai-api/credential  # from 1Password
 ```
 
 `--set-key` reads stdin rather than an argument, so the key never reaches your
@@ -131,17 +131,19 @@ Integrate with 1Password CLI* in the 1Password app. With integration on, `op`
 talks to the running app over a local socket and raises a GUI prompt, which
 matters because cosmic-panel launches the applet with no terminal.
 
-Create the item in the app — *New Item → API Credential*, titled `OpenAI`, key
-pasted into the **credential** field — then right-click that field and choose
+Create the item in the app — *New Item → API Credential*, titled `openai-api`,
+key pasted into the **credential** field — then right-click that field and choose
 **Copy Secret Reference**. That yields the exact `op://…` string, including
 your real vault name, which older accounts spell `Personal` rather than
-`Private`.
+`Private`. The title has to be unique within the vault: `op` matches titles
+case-insensitively, so a separate `OpenAI` login item would make a bare
+`openai` reference ambiguous — hence `openai-api` here and in the default.
 
 The same thing from the CLI:
 
 ```sh
 read -rs OPENAI_KEY     # paste, then Enter — keeps it out of shell history
-op item create --category "API Credential" --title OpenAI --vault Private \
+op item create --category "API Credential" --title openai-api --vault Private \
     credential="$OPENAI_KEY"
 unset OPENAI_KEY
 ```
@@ -153,7 +155,7 @@ Credential* gives you `credential`, a plain *Password* item gives you
 Then verify the two halves separately:
 
 ```sh
-op read "op://Private/OpenAI/credential"   # 1Password half
+op read "op://Private/openai-api/credential"   # 1Password half
 cosmic-whispr --check                      # applet half — "Stored in the keyring"
 ```
 
