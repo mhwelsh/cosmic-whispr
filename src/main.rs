@@ -115,6 +115,11 @@ fn check() {
     let (_, configuration) = config::WhisprConfig::load();
 
     println!("endpoint:    {}", configuration.transcription_url());
+    if !configuration.endpoint_may_carry_key() {
+        println!(
+            "             NOT HTTPS OR LOOPBACK — the API key is withheld from this endpoint"
+        );
+    }
     println!("model:       {}", configuration.model);
     println!(
         "cleanup:     {}",
@@ -134,9 +139,17 @@ fn check() {
         println!("1password:   last imported from {}", configuration.op_reference);
     }
 
-    match configuration.api_key_with_source() {
-        Some((key, source)) => println!("in use:      {} chars, from {source}", key.len()),
-        None => println!("in use:      NOT SET — see --help"),
+    match (
+        configuration.api_key_with_source(),
+        configuration.endpoint_may_carry_key(),
+    ) {
+        (Some((key, source)), true) => {
+            println!("in use:      {} chars, from {source}", key.len())
+        }
+        (Some((_, source)), false) => println!(
+            "in use:      none — a key from {source} is held back from a non-HTTPS endpoint"
+        ),
+        (None, _) => println!("in use:      NOT SET — see --help"),
     }
 
     // The key used to live here. Say so rather than importing it silently:

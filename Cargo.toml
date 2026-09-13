@@ -31,7 +31,7 @@ keyring = "4"
 # Typing into the focused window via the Wayland virtual-keyboard protocol
 wayland-client = "0.31"
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "process"] }
 
 tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util"] }
 

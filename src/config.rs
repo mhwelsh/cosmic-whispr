@@ -124,11 +124,22 @@ impl WhisprConfig {
         }
     }
 
-    /// Resolve the API key, discarding where it came from.
+    /// Resolve the API key for the configured endpoint.
+    ///
+    /// Returns `None` when the endpoint has not earned it — see
+    /// [`Self::endpoint_may_carry_key`] — so a mistyped scheme costs an
+    /// authentication failure rather than the key itself.
     ///
     /// May block: reading the keyring talks to the Secret Service over
     /// D-Bus, which can raise an unlock prompt. Call it off the UI thread.
     pub fn resolve_api_key(&self) -> Option<String> {
+        if !self.endpoint_may_carry_key() {
+            tracing::warn!(
+                api_base = %self.api_base,
+                "endpoint is neither HTTPS nor loopback; withholding the API key"
+            );
+            return None;
+        }
         self.api_key_with_source().map(|(key, _)| key)
     }
 
@@ -155,6 +166,21 @@ impl WhisprConfig {
         }
     }
 
+    /// May the configured endpoint be trusted with the API key?
+    ///
+    /// The key is well protected at rest now, but its destination is not:
+    /// `api_base` is plain text in a config file the applet re-reads on every
+    /// change. Sending a bearer token over `http://` puts it on the wire in
+    /// the clear, and sending it to an arbitrary host hands it over outright,
+    /// so neither happens without TLS.
+    ///
+    /// Loopback is the exception. A local `whisper.cpp` or `faster-whisper`
+    /// server is the reason plain HTTP is supported at all, there is no
+    /// network to listen on, and those servers want no key anyway.
+    pub fn endpoint_may_carry_key(&self) -> bool {
+        endpoint_may_carry_key(&self.api_base)
+    }
+
     /// `{api_base}/audio/transcriptions`, tolerating a trailing slash.
     pub fn transcription_url(&self) -> String {
         format!(
@@ -166,5 +192,73 @@ impl WhisprConfig {
     /// `{api_base}/chat/completions`, for the cleanup pass.
     pub fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
+    }
+}
+
+/// TLS, or a loopback address where there is no network to eavesdrop on.
+///
+/// A URL that will not parse fails closed: if we cannot tell where the key
+/// would go, it does not go.
+pub fn endpoint_may_carry_key(api_base: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(api_base.trim()) else {
+        return false;
+    };
+
+    if url.scheme() == "https" {
+        return true;
+    }
+
+    // `host_str` keeps the brackets around an IPv6 literal, which
+    // `IpAddr::parse` will not take.
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn https_endpoints_may_carry_the_key() {
+        assert!(endpoint_may_carry_key("https://api.openai.com/v1"));
+        assert!(endpoint_may_carry_key("  https://api.groq.com/openai/v1  "));
+    }
+
+    #[test]
+    fn plain_http_to_the_internet_may_not() {
+        assert!(!endpoint_may_carry_key("http://api.openai.com/v1"));
+        assert!(!endpoint_may_carry_key("http://192.168.1.5:8080/v1"));
+        assert!(!endpoint_may_carry_key("http://evil.example/v1"));
+    }
+
+    #[test]
+    fn loopback_may_carry_it_over_plain_http() {
+        assert!(endpoint_may_carry_key("http://localhost:8080/v1"));
+        assert!(endpoint_may_carry_key("http://127.0.0.1:8080/v1"));
+        assert!(endpoint_may_carry_key("http://[::1]:8080/v1"));
+    }
+
+    #[test]
+    fn anything_unparseable_fails_closed() {
+        assert!(!endpoint_may_carry_key(""));
+        assert!(!endpoint_may_carry_key("api.openai.com/v1"));
+        assert!(!endpoint_may_carry_key("not a url"));
+    }
+
+    #[test]
+    fn a_withheld_key_is_not_resolved() {
+        let config = WhisprConfig {
+            api_base: "http://evil.example/v1".into(),
+            ..WhisprConfig::default()
+        };
+        assert!(!config.endpoint_may_carry_key());
+        assert_eq!(config.resolve_api_key(), None);
     }
 }

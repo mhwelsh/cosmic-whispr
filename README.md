@@ -100,6 +100,12 @@ a rotation is one click. `cosmic-whispr --clear-key` forgets the key again.
 when set. That is for trying a throwaway key without disturbing the saved one,
 not for everyday use.
 
+**The key only travels over HTTPS.** If `api_base` is plain `http://` to
+anything but a loopback address, the key is withheld rather than sent in the
+clear, and `--check` says so. Local `whisper.cpp` and `faster-whisper` servers
+on `localhost` are unaffected — they are the reason plain HTTP is allowed, and
+they want no key anyway.
+
 ### Importing from 1Password
 
 `--set-key-from` and the Fetch button run `op read` **once**, at setup, and put
@@ -180,6 +186,16 @@ yet" means run `--set-key` or `--set-key-from`. "Keyring unavailable" means
 nothing is serving `org.freedesktop.secrets` — check that `gnome-keyring-daemon`
 is running with its `secrets` component, and that the login keyring is unlocked.
 A failed `--set-key-from` carries `op`'s own error message.
+
+**"the API key is withheld from this endpoint".** `api_base` is neither HTTPS
+nor a loopback address, so the key is not attached to the request. Fix the
+scheme, or point it at `localhost` if you meant a local server.
+
+**"control socket unavailable".** The applet keeps its socket in
+`$XDG_RUNTIME_DIR`, or in a private `cosmic-whispr-$UID` directory under
+`$TMPDIR` when that is unset. It refuses to use a directory owned by someone
+else or reachable by other users, since anyone who can connect to that socket
+can start your microphone.
 
 **"no audio captured".** The microphone is muted or the wrong device is
 selected; `--list-devices` shows the alternatives.
