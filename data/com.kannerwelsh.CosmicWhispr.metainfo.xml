@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Matt -->
+<component type="desktop-application">
+  <id>com.kannerwelsh.CosmicWhispr</id>
+
+  <!-- Covers this file, not the program. The program is MPL-2.0. -->
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+
+  <name>Whispr Dictation</name>
+  <summary>Dictate into the window you are already typing in</summary>
+
+  <developer id="com.kannerwelsh">
+    <name>Matt</name>
+  </developer>
+
+  <description>
+    <p>
+      Whispr is a COSMIC panel applet for dictation. Press a keyboard shortcut,
+      say what you mean, press it again: the recording goes to a speech-to-text
+      service and the transcript is typed into whichever window has focus, so
+      the words land where you were already working.
+    </p>
+    <p>
+      A second shortcut copies to the clipboard instead, for the times typing
+      into the focused window would be wrong — a password field, a terminal
+      holding a half-written command, someone else's chat window.
+    </p>
+    <p>Also:</p>
+    <ul>
+      <li>Filler words, stutters and false starts are removed by an optional
+      second pass, which can only delete words you actually said.</li>
+      <li>The API key is kept in the system keyring and nowhere else, and is
+      never sent to an endpoint that is neither HTTPS nor loopback.</li>
+      <li>Any OpenAI-compatible endpoint works, including a local
+      whisper.cpp or faster-whisper server, which needs no key at all.</li>
+      <li>Audio never touches the disk.</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">com.kannerwelsh.CosmicWhispr.desktop</launchable>
+
+  <categories>
+    <category>Utility</category>
+    <category>Accessibility</category>
+  </categories>
+
+  <keywords>
+    <keyword>dictation</keyword>
+    <keyword>speech</keyword>
+    <keyword>transcription</keyword>
+    <keyword>microphone</keyword>
+    <keyword>voice</keyword>
+    <keyword>applet</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1" />
+
+  <!--
+    TODO before submitting anywhere: these are required by Flathub and the
+    COSMIC Store, and cannot be filled in from the source tree.
+
+    <url type="homepage">https://github.com/USER/cosmic-whispr</url>
+    <url type="bugtracker">https://github.com/USER/cosmic-whispr/issues</url>
+    <url type="vcs-browser">https://github.com/USER/cosmic-whispr</url>
+
+    <screenshots>
+      <screenshot type="default">
+        <caption>The applet recording from the panel</caption>
+        <image>https://.../recording.png</image>
+      </screenshot>
+    </screenshots>
+  -->
+
+  <releases>
+    <release version="0.1.0" date="2026-09-13">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -23,6 +23,7 @@ Without `just`:
 
 ```sh
 cargo build --release
+just install        # or, by hand:
 install -Dm0755 target/release/cosmic-whispr ~/.local/bin/cosmic-whispr
 install -Dm0644 data/com.kannerwelsh.CosmicWhispr.desktop \
     ~/.local/share/applications/com.kannerwelsh.CosmicWhispr.desktop
@@ -274,3 +275,13 @@ needed, hand it to the compositor, and press the keys. A keymap holds at most
   compositors do too, but a compositor without it cannot be typed into.
 - One applet instance owns the control socket. A second instance logs a
   warning and runs without shortcut support.
+
+## License
+
+MPL-2.0 — see [LICENSE](LICENSE). Every source file carries an
+`SPDX-License-Identifier` header saying the same thing.
+
+The dependency tree agrees: libcosmic is MPL-2.0, the iced fork is MIT, and
+everything else is MIT or Apache-2.0. Nothing in it is copyleft beyond MPL's
+file scope, so the binary is redistributable under MPL-2.0 §3.2 — which is
+what a Flathub or cosmic-flatpak submission checks.
