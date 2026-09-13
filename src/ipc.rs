@@ -124,11 +124,17 @@ impl Command {
 /// — starting the microphone and typing into the focused window. Fall back to
 /// a per-uid directory instead, and make it private ourselves.
 pub fn socket_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("cosmic-whispr-{}", rustix::process::getuid().as_raw()))
-        })
+    socket_dir_in(std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from))
+}
+
+/// The choice itself, taking the runtime directory rather than reading it.
+/// Concurrent `setenv` is a data race on the `environ` array — the reason
+/// Rust 2024 made it `unsafe` — and test threads share one process, so no
+/// test here touches the environment.
+fn socket_dir_in(runtime_dir: Option<PathBuf>) -> PathBuf {
+    runtime_dir.unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("cosmic-whispr-{}", rustix::process::getuid().as_raw()))
+    })
 }
 
 pub fn socket_path() -> PathBuf {
@@ -329,18 +335,14 @@ mod tests {
 
     #[test]
     fn socket_path_follows_the_runtime_dir() {
-        // SAFETY: single-threaded test, and the value is restored below.
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1234") };
         assert_eq!(
-            socket_path(),
-            PathBuf::from("/run/user/1234/cosmic-whispr.sock")
+            socket_dir_in(Some(PathBuf::from("/run/user/1234"))),
+            PathBuf::from("/run/user/1234")
         );
 
         // Without it, the socket must not land directly in a world-writable
         // temp directory, where anyone could connect and drive the applet.
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
-        let fallback = socket_dir();
+        let fallback = socket_dir_in(None);
         assert_ne!(fallback, std::env::temp_dir());
         assert!(fallback.starts_with(std::env::temp_dir()), "{fallback:?}");
         assert!(
@@ -349,11 +351,6 @@ mod tests {
                 .is_some_and(|name| name.to_string_lossy().starts_with("cosmic-whispr-")),
             "{fallback:?}"
         );
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("XDG_RUNTIME_DIR", value) },
-            None => unsafe { std::env::remove_var("XDG_RUNTIME_DIR") },
-        }
     }
 
     #[test]

@@ -80,22 +80,24 @@ pub async fn transcribe(request: Request, wav: Vec<u8>) -> Result<String> {
         return Err(anyhow!("{} — {}", status, describe_error(&body)));
     }
 
-    // A 200 that is not a transcript quotes the body too, and a proxy that
-    // echoes credentials is no less likely to do it with a 200 than a 401.
-    // Only the error is scrubbed: running the transcript itself through the
-    // scanner would edit what the user actually said.
-    parse_transcript(&body)
-        .map_err(|error| anyhow!("{}", redact(error.to_string(), request.api_key.as_ref())))
+    parse_transcript(&body, request.api_key.as_ref())
 }
 
 /// Accept both `{"text": "..."}` and the bare text some servers return when
 /// they ignore `response_format`.
-fn parse_transcript(body: &str) -> Result<String> {
+fn parse_transcript(body: &str, key: Option<&ApiKey>) -> Result<String> {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
         if let Some(text) = value.get("text").and_then(serde_json::Value::as_str) {
             return Ok(text.trim().to_string());
         }
-        return Err(anyhow!("response had no `text` field: {}", truncate(body)));
+        // Scrubbed before it is cut, never after: truncating first can slice
+        // a key into a fragment too short for the scanner to match. Only the
+        // error is scrubbed — running the transcript itself through the
+        // scanner would edit what was actually said.
+        return Err(anyhow!(
+            "response had no `text` field: {}",
+            truncate(&redact(body.to_string(), key))
+        ));
     }
 
     let text = body.trim();
@@ -184,26 +186,26 @@ mod tests {
 
     #[test]
     fn parses_json_transcript() {
-        let text = parse_transcript(r#"{"text":"  hello world  "}"#).expect("parses");
+        let text = parse_transcript(r#"{"text":"  hello world  "}"#, None).expect("parses");
         assert_eq!(text, "hello world");
     }
 
     #[test]
     fn parses_plain_text_transcript() {
         assert_eq!(
-            parse_transcript("hello world\n").expect("parses"),
+            parse_transcript("hello world\n", None).expect("parses"),
             "hello world"
         );
     }
 
     #[test]
     fn rejects_empty_transcript() {
-        assert!(parse_transcript("   ").is_err());
+        assert!(parse_transcript("   ", None).is_err());
     }
 
     #[test]
     fn rejects_json_without_text() {
-        let error = parse_transcript(r#"{"task":"transcribe"}"#)
+        let error = parse_transcript(r#"{"task":"transcribe"}"#, None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("no `text` field"), "{error}");
@@ -296,8 +298,22 @@ mod tests {
         let key = ApiKey::new("sk-proj-abcdefghijklmnopqrstuvwxyz0123456789");
         let body = format!(r#"{{"echo":"Bearer {}"}}"#, key.expose());
 
-        let error = parse_transcript(&body).expect_err("no text field");
-        let scrubbed = redact(error.to_string(), Some(&key));
+        let scrubbed = parse_transcript(&body, Some(&key))
+            .expect_err("no text field")
+            .to_string();
+        assert!(!scrubbed.contains("sk-proj"), "{scrubbed}");
+    }
+
+    /// The same body, long enough that the key sits past the 200-character
+    /// cut. Scrubbing after truncation would leave a fragment behind.
+    #[test]
+    fn a_key_past_the_cut_in_a_success_body_goes_too() {
+        let key = ApiKey::new("sk-proj-abcdefghijklmnopqrstuvwxyz0123456789");
+        let body = format!(r#"{{"pad":"{}","echo":"{}"}}"#, "x".repeat(190), key.expose());
+
+        let scrubbed = parse_transcript(&body, Some(&key))
+            .expect_err("no text field")
+            .to_string();
         assert!(!scrubbed.contains("sk-proj"), "{scrubbed}");
     }
 

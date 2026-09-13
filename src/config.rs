@@ -173,8 +173,16 @@ impl WhisprConfig {
 /// The fallback half of [`WhisprConfig::api_key_with_source`], split out so
 /// it can be exercised without a Secret Service to talk to.
 fn key_from_environment() -> Option<(ApiKey, String)> {
-    let key = std::env::var(API_KEY_ENV).ok()?;
-    let key = key.trim();
+    key_from_value(std::env::var(API_KEY_ENV).ok())
+}
+
+/// The decision itself, taking the value rather than reading it, so tests do
+/// not have to mutate the environment. Concurrent `setenv` is a data race on
+/// the `environ` array — which is why Rust 2024 made it `unsafe` — and test
+/// threads share one process.
+fn key_from_value(value: Option<String>) -> Option<(ApiKey, String)> {
+    let value = value?;
+    let key = value.trim();
     (!key.is_empty()).then(|| (ApiKey::new(key), format!("${API_KEY_ENV}")))
 }
 
@@ -235,33 +243,22 @@ mod tests {
         assert!(!endpoint_may_carry_key("not a url"));
     }
 
-    /// The regression the inverted precedence exists to prevent: a variable
-    /// left over from another tool must never answer for the applet.
+    /// The regression the inverted precedence exists to prevent, expressed
+    /// without touching the environment at all.
     ///
-    /// Deliberately tests `key_from_environment` rather than
-    /// `api_key_with_source`: the latter reaches the Secret Service, which
-    /// would make this pass or fail by what happens to be on the machine.
+    /// `key_from_environment` reads exactly one name, and it is not
+    /// `OPENAI_API_KEY`; what that name holds is then this decision, which
+    /// takes its input as an argument so no test has to call `setenv`.
     #[test]
-    fn a_foreign_variable_is_never_read() {
-        // SAFETY: both names are restored below, and no other test in this
-        // binary reads either of them.
-        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-from-some-other-tool") };
-        unsafe { std::env::remove_var(API_KEY_ENV) };
-        assert!(key_from_environment().is_none());
+    fn only_our_own_variable_can_supply_a_key() {
+        assert_eq!(API_KEY_ENV, "COSMIC_WHISPR_API_KEY");
 
-        unsafe { std::env::set_var(API_KEY_ENV, "sk-ours") };
-        let (key, source) = key_from_environment().expect("reads our own name");
+        let (key, source) = key_from_value(Some("sk-ours".to_string())).expect("reads a value");
         assert_eq!(key.expose(), "sk-ours");
         assert_eq!(source, "$COSMIC_WHISPR_API_KEY");
 
-        // Whitespace is not a key either. Folded into this test rather than
-        // given its own: tests share a process and run in parallel, so two
-        // of them setting the same variable would race.
-        unsafe { std::env::set_var(API_KEY_ENV, "   ") };
-        assert!(key_from_environment().is_none());
-
-        unsafe { std::env::remove_var("OPENAI_API_KEY") };
-        unsafe { std::env::remove_var(API_KEY_ENV) };
+        assert!(key_from_value(None).is_none());
+        assert!(key_from_value(Some("   ".to_string())).is_none());
     }
 
     #[test]

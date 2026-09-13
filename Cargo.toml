@@ -24,9 +24,11 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 
-# API key storage in the Secret Service keyring. On Linux the default `v1`
-# feature resolves to a single store, zbus-secret-service-keyring-store.
-keyring = "4"
+# API key storage in the Secret Service keyring. The store is wired up here
+# rather than through the `keyring` crate's all-in-one wrapper, which caches
+# a failed connection for the life of the process — see `secret::entry`.
+keyring-core = "1"
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
 
 # Wipes the key from memory on drop, so copies do not linger in freed heap
 # where a core dump or swap could pick them up.

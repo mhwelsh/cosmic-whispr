@@ -8,6 +8,7 @@
 
 mod app;
 mod audio;
+mod clipboard;
 mod cleanup;
 mod config;
 mod ipc;
@@ -28,7 +29,8 @@ USAGE:
     cosmic-whispr --cancel        Stop recording and discard
 
     --toggle, --start and --stop take --clipboard or --type, choosing where
-    the transcript goes. Typing into the focused window is the default.
+    the transcript goes. Typing into the focused window is the default;
+    --clipboard needs wl-clipboard installed.
     cosmic-whispr --list-devices  Print available input devices
     cosmic-whispr --check         Report configuration and capabilities
     cosmic-whispr --type-test     Type a test phrase into the focused window
@@ -171,7 +173,9 @@ fn check() {
 
     println!("api key:     {}", secret::status().describe());
     if !configuration.op_reference.is_empty() {
-        println!("1password:   last imported from {}", configuration.op_reference);
+        // Deliberately not "last imported from": this field has a default, so
+        // a fresh install would be told about an import it never did.
+        println!("1password:   reference {}", configuration.op_reference);
     }
 
     match (
@@ -205,6 +209,12 @@ fn check() {
     match audio::describe_input(device) {
         Ok(description) => println!("microphone:  {description}"),
         Err(error) => println!("microphone:  unavailable — {error:#}"),
+    }
+
+    if clipboard::is_available() {
+        println!("clipboard:   wl-copy available");
+    } else {
+        println!("clipboard:   UNAVAILABLE — install wl-clipboard to use --clipboard");
     }
 
     if typer::is_available() {

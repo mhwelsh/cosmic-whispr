@@ -20,7 +20,7 @@ use cosmic::{Element, cosmic_config};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::config::{APP_ID, WhisprConfig};
-use crate::{audio, cleanup, ipc, secret, stt, typer};
+use crate::{audio, cleanup, clipboard, ipc, secret, stt, typer};
 
 /// How often the level meter and elapsed timer refresh while recording.
 const TICK: Duration = Duration::from_millis(100);
@@ -129,6 +129,7 @@ pub enum Message {
     RecordingFinished(Result<audio::Recording, String>),
     Transcribed(Result<String, String>),
     Delivered(Result<(), String>),
+    Copied(Result<(), String>),
     DismissError,
 
     // Settings
@@ -288,6 +289,14 @@ impl cosmic::Application for Whispr {
             Message::Delivered(Ok(())) => self.reset(None),
             Message::Delivered(Err(error)) => self.reset(Some(error)),
 
+            // Nothing was typed, so the notice is the only sign the dictation
+            // worked — and it is only set once the copy actually succeeded.
+            Message::Copied(Ok(())) => {
+                self.notice = Some("Copied to clipboard".to_string());
+                self.reset(None);
+            }
+            Message::Copied(Err(error)) => self.reset(Some(error)),
+
             Message::ApiBaseChanged(value) => return self.edit(|config| config.api_base = value),
             Message::ModelChanged(value) => return self.edit(|config| config.model = value),
             Message::LanguageChanged(value) => return self.edit(|config| config.language = value),
@@ -350,10 +359,7 @@ impl cosmic::Application for Whispr {
                 match result {
                     // Safely stored, so the copy in the box can go; the
                     // status line takes over as the record of what happened.
-                    Ok(()) => {
-                        self.key_input.zeroize();
-                        self.error = None;
-                    }
+                    Ok(()) => self.key_input.zeroize(),
                     Err(error) => {
                         tracing::error!(%error, "api key");
                         self.error = Some(error);
@@ -413,7 +419,12 @@ impl Whispr {
     /// there is no rectangle to thread through from the press.
     fn toggle_popup(&mut self) -> Task<Message> {
         let action = match self.popup.take() {
-            Some(id) => destroy_popup(id),
+            Some(id) => {
+                // `PopupClosed` cannot do this: `popup` is already `None` by
+                // the time it arrives, so its guard never matches.
+                self.notice = None;
+                destroy_popup(id)
+            }
             None => app_popup::<Whispr>(
                 |_| Default::default(),
                 |state: &mut Whispr| {
@@ -620,14 +631,16 @@ impl Whispr {
             // dictations do not run together as they are typed, and a
             // clipboard copy has no such neighbour — it would just be a
             // stray space on the end of every paste.
-            //
-            // Nothing is typed either, so nothing on screen would otherwise
-            // show that the dictation worked.
-            self.notice = Some("Copied to clipboard".to_string());
-            return Task::batch([
-                cosmic::iced::clipboard::write(transcript),
-                cosmic::task::message(cosmic::Action::App(Message::Delivered(Ok(())))),
-            ]);
+            return Task::perform(
+                async move {
+                    // Spawning a process, so not on the UI thread.
+                    tokio::task::spawn_blocking(move || clipboard::copy(&transcript))
+                        .await
+                        .map_err(|error| format!("clipboard task failed: {error}"))?
+                        .map_err(|error| format!("{error:#}"))
+                },
+                |result| cosmic::Action::App(Message::Copied(result)),
+            );
         }
 
         let mut text = transcript;

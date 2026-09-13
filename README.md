@@ -184,6 +184,13 @@ Two shortcuts make both reachable:
 | Super+D | `cosmic-whispr --toggle` | Type into the focused window |
 | Super+Shift+D | `cosmic-whispr --toggle --clipboard` | Copy, then paste it yourself |
 
+Copying needs **wl-clipboard** installed (`paru -S wl-clipboard`); `--check`
+says whether it is. The applet shells out to `wl-copy` rather than setting the
+selection itself, because a Wayland client may only do that using the serial
+of a recent input event on one of its own surfaces — and an applet driven by a
+global shortcut never receives one. `wl-copy` speaks the data-control
+protocols, which need no serial, and keeps a process alive to serve the data.
+
 The press that *starts* a recording picks where the transcript goes, so you
 decide before you speak rather than after. Stopping with the other shortcut
 does not redirect it — only an explicit `--clipboard` or `--type` on the

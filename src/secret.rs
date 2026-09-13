@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use keyring::Entry;
+use keyring_core::{Entry, Error as KeyringError};
 use zeroize::Zeroizing;
 
 use crate::config::APP_ID;
@@ -56,7 +56,17 @@ impl std::fmt::Debug for ApiKey {
 
 /// Account name the key is filed under. Secret Service items are addressed
 /// by a (service, account) pair, and the service is the application ID.
+#[cfg(not(test))]
 const ACCOUNT: &str = "api-key";
+
+/// Under test, a different entry entirely.
+///
+/// The live round-trip test stores and then deletes whatever it addresses.
+/// Pointed at the real account it destroys the key the developer is actually
+/// using — which is not a hypothetical: it ate one while this test was being
+/// run against a working install.
+#[cfg(test)]
+const ACCOUNT: &str = "api-key-under-test";
 
 /// 1Password secret references start with this scheme.
 const REFERENCE_SCHEME: &str = "op://";
@@ -96,7 +106,24 @@ impl Status {
 }
 
 fn entry() -> Result<Entry> {
-    Entry::new(APP_ID, ACCOUNT).context("cannot reach the Secret Service keyring")
+    // Connected on demand, and retried whenever it is missing.
+    //
+    // The `keyring` crate's all-in-one wrapper does this once, in a
+    // `LazyLock`, and keeps the result forever. That is the wrong shape for a
+    // panel applet: the session can start it before `gnome-keyring-daemon`
+    // has claimed `org.freedesktop.secrets`, and a failure cached at that
+    // moment would report "keyring unavailable" for every dictation until the
+    // next login, long after the daemon was ready.
+    if keyring_core::get_default_store().is_none() {
+        let store = zbus_secret_service_keyring_store::Store::new()
+            .map_err(|error| anyhow!(error))
+            .context("cannot reach the Secret Service keyring")?;
+        keyring_core::set_default_store(store);
+    }
+
+    Entry::new(APP_ID, ACCOUNT)
+        .map_err(|error| anyhow!(error))
+        .context("cannot address the API key in the keyring")
 }
 
 /// Run a keyring operation on a thread of its own.
@@ -149,6 +176,7 @@ pub fn store(key: &str) -> Result<()> {
     isolated(move || {
         entry()?
             .set_password(&key)
+            .map_err(|error| anyhow!(error))
             .context("cannot save the API key to the keyring")
     })
 }
@@ -158,7 +186,7 @@ pub fn store(key: &str) -> Result<()> {
 pub fn load() -> Result<Option<ApiKey>> {
     isolated(|| match entry()?.get_password() {
         Ok(key) => Ok(Some(ApiKey::new(key))),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(KeyringError::NoEntry) => Ok(None),
         Err(error) => Err(anyhow!(error).context("cannot read the API key from the keyring")),
     })
 }
@@ -166,7 +194,7 @@ pub fn load() -> Result<Option<ApiKey>> {
 /// Forget the stored key. Deleting one that is already gone is not an error.
 pub fn clear() -> Result<()> {
     isolated(|| match entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
         Err(error) => Err(anyhow!(error).context("cannot remove the API key from the keyring")),
     })
 }
@@ -319,6 +347,7 @@ mod tests {
     }
 
     /// Needs a live Secret Service, so it is not part of the default run.
+    /// Addresses `api-key-under-test`, never the real entry.
     #[test]
     #[ignore = "requires a running Secret Service"]
     fn round_trips_through_the_keyring() {
