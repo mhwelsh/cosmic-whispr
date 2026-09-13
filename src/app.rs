@@ -108,8 +108,11 @@ pub struct Whispr {
     /// Where the transcript in flight is headed. Chosen when the recording
     /// starts, so the shortcut you press to begin decides.
     delivery: ipc::Delivery,
-    /// Transient confirmation for a delivery that leaves nothing on screen —
-    /// a clipboard copy types nothing, so it needs to say so somewhere.
+    /// Confirmation for a copy made while the popup is open, where a
+    /// delivery that types nothing would otherwise look like nothing
+    /// happening. The shortcut flow never sees it — the popup is closed, and
+    /// the paste is its own confirmation — so it is cleared whenever the
+    /// popup opens rather than lingering into a later visit.
     notice: Option<String>,
 }
 
@@ -208,7 +211,11 @@ impl cosmic::Application for Whispr {
             notice: None,
         };
 
-        (applet, refresh_key_status())
+        // Deliberately not probing the keyring here. The panel starts this at
+        // login, and asking a keyring that PAM has not unlocked would raise a
+        // dialog for an applet the user may never open. The status is only
+        // ever shown in the popup, so it is fetched when the popup opens.
+        (applet, Task::none())
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
@@ -236,7 +243,16 @@ impl cosmic::Application for Whispr {
             Message::Surface(action) => {
                 return cosmic::task::message(cosmic::Action::Surface(action));
             }
-            Message::TogglePopup => return self.toggle_popup(),
+            Message::TogglePopup => {
+                let opening = self.popup.is_none();
+                let toggled = self.toggle_popup();
+                // Fetched on open, which is the moment it is displayed.
+                return if opening {
+                    Task::batch([toggled, refresh_key_status()])
+                } else {
+                    toggled
+                };
+            }
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;
@@ -295,8 +311,7 @@ impl cosmic::Application for Whispr {
             Message::Delivered(Ok(())) => self.reset(None),
             Message::Delivered(Err(error)) => self.reset(Some(error)),
 
-            // Nothing was typed, so the notice is the only sign the dictation
-            // worked — and it is only set once the copy actually succeeded.
+            // Set only once the copy has actually succeeded.
             Message::Copied(Ok(())) => {
                 self.notice = Some("Copied to clipboard".to_string());
                 self.reset(None);
@@ -442,11 +457,15 @@ impl Whispr {
                 self.notice = None;
                 destroy_popup(id)
             }
+
             None => app_popup::<Whispr>(
                 |_| Default::default(),
                 |state: &mut Whispr| {
                     let id = Id::unique();
                     state.popup = Some(id);
+                    // Belongs to the visit in which the copy happened, not to
+                    // this one.
+                    state.notice = None;
                     let mut settings = state.core.applet.get_popup_settings(
                         state.core.main_window_id().unwrap(),
                         id,
@@ -720,6 +739,18 @@ impl Whispr {
             content = content.push(cosmic::applet::padded_control(text::caption(
                 "This compositor does not offer the virtual-keyboard protocol, \
                  so transcripts cannot be typed.",
+            )));
+        }
+
+        // A key that will not be sent is worth saying out loud. Otherwise the
+        // status line reads "Stored in the keyring", the endpoint is right
+        // there in the same popup, and the only symptom is an unexplained 401.
+        if matches!(self.key_status, secret::Status::Stored { .. })
+            && !self.config.endpoint_may_carry_key()
+        {
+            content = content.push(cosmic::applet::padded_control(text::caption(
+                "The endpoint is neither HTTPS nor a loopback address, so the \
+                 API key is not being sent with it.",
             )));
         }
 

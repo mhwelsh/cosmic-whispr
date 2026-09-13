@@ -137,8 +137,11 @@ fn socket_dir_in(runtime_dir: Option<PathBuf>) -> PathBuf {
     })
 }
 
+/// File name of the control socket inside [`socket_dir`].
+const SOCKET_NAME: &str = "cosmic-whispr.sock";
+
 pub fn socket_path() -> PathBuf {
-    socket_dir().join("cosmic-whispr.sock")
+    socket_dir().join(SOCKET_NAME)
 }
 
 /// Create the socket directory if it is ours to create, and refuse to use one
@@ -160,6 +163,17 @@ fn prepare_socket_dir(dir: &Path) -> Result<()> {
             .with_context(|| format!("cannot create {}", dir.display()))?;
     }
 
+    verify_socket_dir(dir)
+}
+
+/// The checks alone, without creating anything.
+///
+/// The client needs these too. A listener that refuses a directory someone
+/// else owns, paired with a client that connects to it anyway, is worse than
+/// either alone: the applet declines to bind, the squatter's socket answers
+/// instead, and `--toggle` reports success while the shortcut quietly does
+/// nothing and every press is delivered to them.
+fn verify_socket_dir(dir: &Path) -> Result<()> {
     // `symlink_metadata` rather than `metadata`: the latter follows links, so
     // a symlink planted at our path pointing at some 0700 directory we own —
     // ~/.ssh, say — would pass both checks below and we would bind the
@@ -195,7 +209,11 @@ fn prepare_socket_dir(dir: &Path) -> Result<()> {
 
 /// Send one command to a running applet. Blocking, for the CLI path.
 pub fn send(command: Command) -> Result<()> {
-    let path = socket_path();
+    let dir = socket_dir();
+    verify_socket_dir(&dir)
+        .with_context(|| format!("refusing to use the control socket in {}", dir.display()))?;
+
+    let path = dir.join(SOCKET_NAME);
     let mut stream = std::os::unix::net::UnixStream::connect(&path).with_context(|| {
         format!(
             "no applet listening on {} — is cosmic-whispr running in the panel?",
@@ -223,7 +241,7 @@ pub fn listen() -> Subscription<Command> {
                     unreachable!();
                 }
 
-                let path = dir.join("cosmic-whispr.sock");
+                let path = dir.join(SOCKET_NAME);
                 // A socket left behind by a crashed instance would block bind.
                 let _ = std::fs::remove_file(&path);
 

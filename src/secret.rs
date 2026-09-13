@@ -202,10 +202,19 @@ pub fn clear() -> Result<()> {
 /// Summarize the keyring for display. Never fails: an unreachable keyring is
 /// something the panel reports, not something it propagates.
 pub fn status() -> Status {
-    match load() {
-        Ok(Some(key)) => Status::Stored { length: key.len() },
-        Ok(None) => Status::Empty,
-        Err(error) => Status::Unavailable(format!("{error:#}")),
+    Status::from(&load())
+}
+
+impl Status {
+    /// Describe a lookup that has already happened, so a caller needing both
+    /// the key and its status does not pay for two D-Bus round trips — which
+    /// on a locked keyring means two unlock prompts.
+    pub fn from(loaded: &Result<Option<ApiKey>>) -> Self {
+        match loaded {
+            Ok(Some(key)) => Self::Stored { length: key.len() },
+            Ok(None) => Self::Empty,
+            Err(error) => Self::Unavailable(format!("{error:#}")),
+        }
     }
 }
 

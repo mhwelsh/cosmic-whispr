@@ -172,7 +172,7 @@ impl WhisprConfig {
 
 /// The fallback half of [`WhisprConfig::api_key_with_source`], split out so
 /// it can be exercised without a Secret Service to talk to.
-fn key_from_environment() -> Option<(ApiKey, String)> {
+pub fn key_from_environment() -> Option<(ApiKey, String)> {
     key_from_value(std::env::var(API_KEY_ENV).ok())
 }
 

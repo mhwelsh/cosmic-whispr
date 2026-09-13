@@ -27,10 +27,6 @@ USAGE:
     cosmic-whispr --start         Start recording
     cosmic-whispr --stop          Stop recording and transcribe
     cosmic-whispr --cancel        Stop recording and discard
-
-    --toggle, --start and --stop take --clipboard or --type, choosing where
-    the transcript goes. Typing into the focused window is the default;
-    --clipboard needs wl-clipboard installed.
     cosmic-whispr --list-devices  Print available input devices
     cosmic-whispr --check         Report configuration and capabilities
     cosmic-whispr --type-test     Type a test phrase into the focused window
@@ -40,6 +36,11 @@ SETTING THE API KEY:
     cosmic-whispr --set-key             Read the key from stdin, save it
     cosmic-whispr --set-key-from [REF]  Import it from 1Password, save it
     cosmic-whispr --clear-key           Forget the saved key
+
+DELIVERY:
+    --toggle, --start and --stop take --clipboard or --type, choosing where
+    the transcript goes. Typing into the focused window is the default;
+    --clipboard needs wl-clipboard installed.
 
 Bind --toggle to a keyboard shortcut in COSMIC Settings: clicking the panel
 icon moves keyboard focus to the panel, while a shortcut leaves focus in the
@@ -120,6 +121,15 @@ fn main() -> cosmic::iced::Result {
     }
 }
 
+/// Base of the per-user config tree, the way cosmic-config resolves it.
+fn config_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+        })
+}
+
 /// Read the delivery flag that may follow a control argument.
 ///
 /// Absent means "whatever the recording already chose", which is what lets
@@ -171,17 +181,21 @@ fn check() {
         }
     );
 
-    println!("api key:     {}", secret::status().describe());
+    // Asked once and used for both lines below: each lookup is its own D-Bus
+    // round trip, and on a locked keyring each one is its own unlock prompt.
+    let stored = secret::load();
+    println!("api key:     {}", secret::Status::from(&stored).describe());
     if !configuration.op_reference.is_empty() {
         // Deliberately not "last imported from": this field has a default, so
         // a fresh install would be told about an import it never did.
         println!("1password:   reference {}", configuration.op_reference);
     }
 
-    match (
-        configuration.api_key_with_source(),
-        configuration.endpoint_may_carry_key(),
-    ) {
+    let in_use = match stored {
+        Ok(Some(key)) => Some((key, "the keyring".to_string())),
+        _ => config::key_from_environment(),
+    };
+    match (in_use, configuration.endpoint_may_carry_key()) {
         (Some((key, source)), true) => {
             println!("in use:      {} chars, from {source}", key.len())
         }
@@ -195,10 +209,9 @@ fn check() {
     // that file now, and nothing deleted it, so a plain-text key can be
     // sitting there while this build claims the key lives in the keyring and
     // nowhere else. Say so; deleting a file we no longer own is not ours.
-    if let Some(stale) = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .map(|home| {
-            home.join(".config/cosmic")
+    if let Some(stale) = config_home()
+        .map(|base| {
+            base.join("cosmic")
                 .join(config::APP_ID)
                 .join(format!("v{}", config::CONFIG_VERSION))
                 .join("api_key")
@@ -214,10 +227,7 @@ fn check() {
     // The key used to live here too. Say so rather than importing it
     // silently: the file may be shared with other tools, so removing it is
     // not ours.
-    let legacy = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))
-        .map(|base| base.join("cosmic-whispr").join(".env"));
+    let legacy = config_home().map(|base| base.join("cosmic-whispr").join(".env"));
     if let Some(path) = legacy.filter(|path| path.exists()) {
         println!(
             "note:        {} is no longer read — import it with --set-key and delete it",
