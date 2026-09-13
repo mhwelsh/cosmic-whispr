@@ -16,17 +16,23 @@ microphone ──▶ downmix + resample ──▶ 16 kHz mono 16-bit WAV ──�
 Requires a Rust toolchain and ALSA development headers.
 
 ```sh
+git clone https://github.com/mhwelsh/cosmic-whispr
+cd cosmic-whispr
 just install          # builds release, installs into ~/.local
 ```
 
-Without `just`:
+Without `just`, the same four files by hand:
 
 ```sh
 cargo build --release
-just install        # or, by hand:
+appid=com.kannerwelsh.CosmicWhispr
 install -Dm0755 target/release/cosmic-whispr ~/.local/bin/cosmic-whispr
-install -Dm0644 data/com.kannerwelsh.CosmicWhispr.desktop \
-    ~/.local/share/applications/com.kannerwelsh.CosmicWhispr.desktop
+install -Dm0644 "data/$appid.desktop" ~/.local/share/applications/"$appid.desktop"
+install -Dm0644 "data/$appid.metainfo.xml" ~/.local/share/metainfo/"$appid.metainfo.xml"
+install -Dm0644 LICENSE ~/.local/share/licenses/"$appid"/LICENSE
+# The panel's PATH may not include ~/.local/bin, so spell the Exec out.
+sed -i "s|^Exec=cosmic-whispr$|Exec=$HOME/.local/bin/cosmic-whispr|" \
+    ~/.local/share/applications/"$appid.desktop"
 ```
 
 Then add **Whispr Dictation** in *Settings → Desktop → Panel → Applets*, and

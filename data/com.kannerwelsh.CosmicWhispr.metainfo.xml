@@ -56,18 +56,19 @@
 
   <content_rating type="oars-1.1" />
 
-  <!--
-    TODO before submitting anywhere: these are required by Flathub and the
-    COSMIC Store, and cannot be filled in from the source tree.
+  <url type="homepage">https://github.com/mhwelsh/cosmic-whispr</url>
+  <url type="bugtracker">https://github.com/mhwelsh/cosmic-whispr/issues</url>
+  <url type="vcs-browser">https://github.com/mhwelsh/cosmic-whispr</url>
 
-    <url type="homepage">https://github.com/USER/cosmic-whispr</url>
-    <url type="bugtracker">https://github.com/USER/cosmic-whispr/issues</url>
-    <url type="vcs-browser">https://github.com/USER/cosmic-whispr</url>
+  <!--
+    TODO: Flathub requires at least one screenshot, served from a stable URL.
+    Commit a PNG to data/screenshots/ and point at the raw URL on the default
+    branch, which changes if the branch is ever renamed:
 
     <screenshots>
       <screenshot type="default">
-        <caption>The applet recording from the panel</caption>
-        <image>https://.../recording.png</image>
+        <caption>Dictating from the panel</caption>
+        <image>https://raw.githubusercontent.com/mhwelsh/cosmic-whispr/master/data/screenshots/panel.png</image>
       </screenshot>
     </screenshots>
   -->
