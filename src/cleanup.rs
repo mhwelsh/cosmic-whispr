@@ -17,6 +17,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 
+use crate::secret::ApiKey;
+
 /// Cleanup should be unnoticeable next to transcription; give up rather than
 /// keep the user waiting on it.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -35,7 +37,7 @@ const MIN_RETENTION: f32 = 0.35;
 #[derive(Clone, Debug)]
 pub struct Request {
     pub url: String,
-    pub api_key: Option<String>,
+    pub api_key: Option<ApiKey>,
     pub model: String,
 }
 
@@ -91,8 +93,8 @@ async fn clean(request: Request, transcript: &str) -> Result<String> {
         .context("cannot build the HTTP client")?;
 
     let mut builder = client.post(&request.url).json(&body);
-    if let Some(key) = request.api_key.filter(|key| !key.is_empty()) {
-        builder = builder.bearer_auth(key);
+    if let Some(key) = request.api_key.as_ref().filter(|key| !key.is_empty()) {
+        builder = builder.bearer_auth(key.expose());
     }
 
     let response = builder
@@ -103,7 +105,11 @@ async fn clean(request: Request, transcript: &str) -> Result<String> {
     let status = response.status();
     let body = response.text().await.context("cannot read the reply")?;
     if !status.is_success() {
-        return Err(anyhow!("{status} — {}", crate::stt::describe_error(&body)));
+        // This one only ever reaches the log, but the log is a file.
+        return Err(anyhow!(
+            "{status} — {}",
+            crate::stt::redact(crate::stt::describe_error(&body), request.api_key.as_ref())
+        ));
     }
 
     let parsed: ChatResponse =

@@ -12,8 +12,47 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use keyring::Entry;
+use zeroize::Zeroizing;
 
 use crate::config::APP_ID;
+
+/// An API key, wiped from memory when the last copy goes away.
+///
+/// A plain `String` leaves the key in freed heap until something reuses the
+/// allocation, which puts it within reach of a core dump or of swap — both
+/// disk-at-rest paths, and therefore inside the boundary the keyring is meant
+/// to close. `Zeroizing` overwrites the buffer on drop instead.
+///
+/// The [`Debug`] implementation prints nothing useful, so the key cannot
+/// reach a log through a `{:?}` on some struct that happens to contain it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ApiKey(Zeroizing<String>);
+
+impl ApiKey {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(Zeroizing::new(key.into()))
+    }
+
+    /// Hand out the key itself. Named to make call sites easy to audit.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// Character count, for reporting a key without revealing it.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ApiKey(redacted)")
+    }
+}
 
 /// Account name the key is filed under. Secret Service items are addressed
 /// by a (service, account) pair, and the service is the application ID.
@@ -80,12 +119,11 @@ where
 
 /// Save the key, replacing whatever was there.
 pub fn store(key: &str) -> Result<()> {
-    let key = key.trim();
+    let key = Zeroizing::new(key.trim().to_string());
     if key.is_empty() {
         bail!("the API key is empty");
     }
 
-    let key = key.to_string();
     isolated(move || {
         entry()?
             .set_password(&key)
@@ -95,9 +133,9 @@ pub fn store(key: &str) -> Result<()> {
 
 /// Read the key back. `Ok(None)` means the keyring works but holds nothing,
 /// which is a setup state rather than a failure.
-pub fn load() -> Result<Option<String>> {
+pub fn load() -> Result<Option<ApiKey>> {
     isolated(|| match entry()?.get_password() {
-        Ok(key) => Ok(Some(key)),
+        Ok(key) => Ok(Some(ApiKey::new(key))),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(anyhow!(error).context("cannot read the API key from the keyring")),
     })
@@ -129,7 +167,7 @@ pub fn is_reference(value: &str) -> bool {
 ///
 /// Setup only. The result is meant to go straight into [`store`]; nothing
 /// caches it, because nothing calls this twice.
-pub fn read_reference(reference: &str) -> Result<String> {
+pub fn read_reference(reference: &str) -> Result<Zeroizing<String>> {
     let reference = reference.trim();
     if !is_reference(reference) {
         bail!("a 1Password reference looks like {REFERENCE_SCHEME}vault/item/field");
@@ -179,10 +217,15 @@ pub fn read_reference(reference: &str) -> Result<String> {
         });
     }
 
-    let key = String::from_utf8(output.stdout)
-        .context("`op read` returned invalid UTF-8")?
-        .trim()
-        .to_string();
+    // The child's stdout buffer holds the secret; wipe it along with the
+    // string built from it.
+    let stdout = Zeroizing::new(output.stdout);
+    let key = Zeroizing::new(
+        std::str::from_utf8(&stdout)
+            .context("`op read` returned invalid UTF-8")?
+            .trim()
+            .to_string(),
+    );
     if key.is_empty() {
         bail!("`op read` returned an empty value");
     }
@@ -223,6 +266,15 @@ mod tests {
     }
 
     #[test]
+    fn a_key_never_prints_itself() {
+        let key = ApiKey::new("sk-proj-should-not-appear");
+        let rendered = format!("{key:?}");
+        assert!(!rendered.contains("sk-proj"), "{rendered}");
+        assert_eq!(key.expose(), "sk-proj-should-not-appear");
+        assert_eq!(key.len(), 25);
+    }
+
+    #[test]
     fn status_describes_a_stored_key_without_revealing_it() {
         let described = Status::Stored { length: 164 }.describe();
         assert!(described.contains("164"), "{described}");
@@ -234,9 +286,12 @@ mod tests {
     #[ignore = "requires a running Secret Service"]
     fn round_trips_through_the_keyring() {
         store("sk-test-round-trip").expect("store");
-        assert_eq!(load().expect("load").as_deref(), Some("sk-test-round-trip"));
+        assert_eq!(
+            load().expect("load").map(|key| key.expose().to_string()),
+            Some("sk-test-round-trip".to_string())
+        );
         clear().expect("clear");
-        assert_eq!(load().expect("load"), None);
+        assert!(load().expect("load").is_none());
         clear().expect("clearing twice is fine");
     }
 }

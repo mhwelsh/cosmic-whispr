@@ -3,7 +3,7 @@
 //! Persisted settings, stored through `cosmic-config` so COSMIC Settings and
 //! the applet see the same values.
 
-use crate::secret;
+use crate::secret::{self, ApiKey};
 use cosmic::cosmic_config::cosmic_config_derive::CosmicConfigEntry;
 use cosmic::cosmic_config::{self, Config, CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
@@ -137,7 +137,7 @@ impl WhisprConfig {
     ///
     /// May block: reading the keyring talks to the Secret Service over
     /// D-Bus, which can raise an unlock prompt. Call it off the UI thread.
-    pub fn resolve_api_key(&self) -> Option<String> {
+    pub fn resolve_api_key(&self) -> Option<ApiKey> {
         if !self.endpoint_may_carry_key() {
             tracing::warn!(
                 api_base = %self.api_base,
@@ -158,15 +158,16 @@ impl WhisprConfig {
     /// hold the new key, and the applet would keep sending the old one. As a
     /// fallback it cannot do that, while still covering the case it is
     /// actually for: no Secret Service to talk to.
-    pub fn api_key_with_source(&self) -> Option<(String, String)> {
+    pub fn api_key_with_source(&self) -> Option<(ApiKey, String)> {
         match secret::load() {
             Ok(Some(key)) => return Some((key, "the keyring".to_string())),
             Ok(None) => {}
             Err(error) => tracing::warn!("{error:#}"),
         }
 
-        let key = std::env::var(API_KEY_ENV).ok()?.trim().to_string();
-        (!key.is_empty()).then(|| (key, format!("${API_KEY_ENV}")))
+        let key = std::env::var(API_KEY_ENV).ok()?;
+        let key = key.trim();
+        (!key.is_empty()).then(|| (ApiKey::new(key), format!("${API_KEY_ENV}")))
     }
 
     /// May the configured endpoint be trusted with the API key?
@@ -268,7 +269,7 @@ mod tests {
         assert!(
             config
                 .api_key_with_source()
-                .is_none_or(|(key, _)| key != "sk-from-some-other-tool")
+                .is_none_or(|(key, _)| key.expose() != "sk-from-some-other-tool")
         );
 
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
@@ -281,6 +282,6 @@ mod tests {
             ..WhisprConfig::default()
         };
         assert!(!config.endpoint_may_carry_key());
-        assert_eq!(config.resolve_api_key(), None);
+        assert!(config.resolve_api_key().is_none());
     }
 }

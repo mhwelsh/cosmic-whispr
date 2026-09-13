@@ -106,6 +106,10 @@ over from some other tool would quietly outrank a key you had just rotated.
 developer machines in the world, and a variable meant for another tool
 answering for this one is a trap rather than a convenience.
 
+The key is held in memory as a type that wipes its buffer on drop and refuses
+to print itself, and error text coming back from the endpoint is scrubbed of
+anything key-shaped before it reaches the popup or the log.
+
 **The key only travels over HTTPS.** If `api_base` is plain `http://` to
 anything but a loopback address, the key is withheld rather than sent in the
 clear, and `--check` says so. Local `whisper.cpp` and `faster-whisper` servers

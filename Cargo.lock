@@ -1148,6 +1148,7 @@ dependencies = [
  "tracing-subscriber",
  "wayland-client",
  "wayland-protocols-misc",
+ "zeroize",
 ]
 
 [[package]]

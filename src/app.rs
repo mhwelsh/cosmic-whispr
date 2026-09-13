@@ -17,6 +17,7 @@ use cosmic::widget::{
     text_input, toggler,
 };
 use cosmic::{Element, cosmic_config};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::config::{APP_ID, WhisprConfig};
 use crate::{audio, cleanup, ipc, secret, stt, typer};
@@ -86,9 +87,15 @@ pub struct Whispr {
     device_labels: Vec<String>,
     can_type: bool,
     /// What the user has typed into the API key box. Deliberately transient:
-    /// it is cleared the moment the key reaches the keyring, and is never
+    /// it is wiped the moment the key reaches the keyring, and is never
     /// written to the config.
-    key_input: String,
+    ///
+    /// Each keystroke hands us a fresh `String` from the text widget, and the
+    /// one it replaces is dropped inside the widget where we cannot reach it.
+    /// Wiping what we hold is therefore a reduction of the exposure, not an
+    /// elimination of it — pasting in one go leaves far less behind than
+    /// typing a key out character by character.
+    key_input: Zeroizing<String>,
     /// Whether the key box masks what it holds.
     key_hidden: bool,
     /// Cached answer to "what does the keyring hold". Refreshed by a task,
@@ -179,7 +186,7 @@ impl cosmic::Application for Whispr {
                 .collect(),
             devices,
             can_type,
-            key_input: String::new(),
+            key_input: Zeroizing::new(String::new()),
             key_hidden: true,
             key_status: secret::Status::Empty,
             key_busy: false,
@@ -291,13 +298,16 @@ impl cosmic::Application for Whispr {
                 return self.edit(|config| config.cleanup_model = value);
             }
 
-            Message::KeyInputChanged(value) => self.key_input = value,
+            Message::KeyInputChanged(value) => {
+                self.key_input.zeroize();
+                self.key_input = Zeroizing::new(value);
+            }
             Message::KeyVisibilityToggled => self.key_hidden = !self.key_hidden,
             Message::OpReferenceChanged(value) => {
                 return self.edit(|config| config.op_reference = value);
             }
             Message::SaveKey => {
-                let key = std::mem::take(&mut self.key_input);
+                let key = std::mem::replace(&mut self.key_input, Zeroizing::new(String::new()));
                 if key.trim().is_empty() {
                     return Task::none();
                 }
@@ -313,7 +323,7 @@ impl cosmic::Application for Whispr {
                 return store_key(move || secret::import_reference(&reference));
             }
             Message::ClearKey => {
-                self.key_input.clear();
+                self.key_input.zeroize();
                 self.key_busy = true;
                 return store_key(secret::clear);
             }
@@ -698,7 +708,7 @@ impl Whispr {
             .push(
                 secure_input(
                     "paste your API key",
-                    &self.key_input,
+                    self.key_input.as_str(),
                     Some(Message::KeyVisibilityToggled),
                     self.key_hidden,
                 )

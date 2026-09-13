@@ -28,6 +28,10 @@ reqwest = { version = "0.12", default-features = false, features = [
 # feature resolves to a single store, zbus-secret-service-keyring-store.
 keyring = "4"
 
+# Wipes the key from memory on drop, so copies do not linger in freed heap
+# where a core dump or swap could pick them up.
+zeroize = "1"
+
 # Typing into the focused window via the Wayland virtual-keyboard protocol
 wayland-client = "0.31"
 wayland-protocols-misc = { version = "0.3", features = ["client"] }

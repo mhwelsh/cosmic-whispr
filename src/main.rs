@@ -200,7 +200,7 @@ fn set_key() -> cosmic::iced::Result {
         eprintln!("Paste the API key, then press Enter and Ctrl-D:");
     }
 
-    let mut key = String::new();
+    let mut key = zeroize::Zeroizing::new(String::new());
     if let Err(error) = std::io::stdin().read_to_string(&mut key) {
         eprintln!("cosmic-whispr: cannot read the key from stdin: {error}");
         std::process::exit(1);
