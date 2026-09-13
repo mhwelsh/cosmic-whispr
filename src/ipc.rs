@@ -23,9 +23,16 @@ use tokio::net::{UnixListener, UnixStream};
 const LONGEST_COMMAND: u64 = 64;
 
 /// A client that connects and then says nothing gets this long to speak.
-/// Each connection is read on its own task, so a stalled peer costs only its
-/// own task — but it should not sit there forever either.
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// Connections are read one at a time, on purpose. Reading each on its own
+/// task removes head-of-line blocking but gives up ordering: `send` writes
+/// only after `connect` returns, so two clients racing between those two
+/// steps can reach the channel in the wrong order, and a `stop` overtaking
+/// its `start` is dropped as "not recording" while the recording it should
+/// have ended runs on. Ordering is worth more here than the delay a
+/// misbehaving peer can impose, so the read stays inline and this timeout
+/// bounds what that peer can cost — a real client writes immediately.
+const READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Where a finished transcript goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,15 +141,28 @@ pub fn socket_path() -> PathBuf {
 /// Checked rather than assumed: `create_dir_all` succeeds on a directory that
 /// already exists, which an attacker who got there first would own.
 fn prepare_socket_dir(dir: &Path) -> Result<()> {
-    if !dir.exists() {
-        std::fs::create_dir_all(dir)
+    use std::os::unix::fs::DirBuilderExt;
+
+    // Created with the mode already set. Creating and then chmod-ing leaves
+    // a window at the umask's 0755, which is exactly long enough for someone
+    // to walk in. 0700 survives any umask, which can only clear bits.
+    if std::fs::symlink_metadata(dir).is_err() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
             .with_context(|| format!("cannot create {}", dir.display()))?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("cannot restrict {}", dir.display()))?;
     }
 
-    let metadata = std::fs::metadata(dir)
+    // `symlink_metadata` rather than `metadata`: the latter follows links, so
+    // a symlink planted at our path pointing at some 0700 directory we own —
+    // ~/.ssh, say — would pass both checks below and we would bind the
+    // control socket inside it.
+    let metadata = std::fs::symlink_metadata(dir)
         .with_context(|| format!("cannot inspect {}", dir.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!("{} is a symlink, which is not where a control socket belongs", dir.display());
+    }
     if !metadata.is_dir() {
         bail!("{} is not a directory", dir.display());
     }
@@ -224,17 +244,9 @@ pub fn listen() -> Subscription<Command> {
                 loop {
                     match listener.accept().await {
                         Ok((connection, _)) => {
-                            // Read on its own task rather than inline. The
-                            // accept loop is single-threaded, so reading here
-                            // would let one peer that connects and says
-                            // nothing delay every shortcut behind it for as
-                            // long as it cared to hold the connection.
-                            let mut output = output.clone();
-                            tokio::spawn(async move {
-                                if let Some(command) = read_command(connection).await {
-                                    let _ = output.send(command).await;
-                                }
-                            });
+                            if let Some(command) = read_command(connection).await {
+                                let _ = output.send(command).await;
+                            }
                         }
                         Err(error) => {
                             tracing::warn!(%error, "control socket accept failed");
@@ -358,6 +370,56 @@ mod tests {
 
         // Running twice is how every restart goes.
         prepare_socket_dir(&dir).expect("accepts its own directory");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prepare_refuses_a_symlink_even_to_somewhere_we_own() {
+        let target = std::env::temp_dir().join(format!(
+            "cosmic-whispr-test-target-{}",
+            std::process::id()
+        ));
+        let link = std::env::temp_dir().join(format!(
+            "cosmic-whispr-test-link-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&target);
+        let _ = std::fs::remove_file(&link);
+
+        // A private directory we own, which is what makes this the
+        // interesting case: the uid and mode checks would both pass.
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&target)
+            .expect("create target");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        let error = prepare_socket_dir(&link).unwrap_err().to_string();
+        assert!(error.contains("symlink"), "{error}");
+
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn prepare_creates_it_private_from_the_first_moment() {
+        let dir = std::env::temp_dir().join(format!(
+            "cosmic-whispr-test-mode-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        prepare_socket_dir(&dir).expect("creates");
+        // Set at creation rather than chmod-ed afterwards, so there is no
+        // window at the umask's default.
+        let mode = std::fs::symlink_metadata(&dir)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "{mode:04o}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -8,7 +8,7 @@ use std::time::Duration;
 use cosmic::app::{Core, Task};
 use cosmic::iced::core::window;
 use cosmic::iced::window::Id;
-use cosmic::iced::{Alignment, Length, Subscription};
+use cosmic::iced::{Alignment, Length, Limits, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::widget::dropdown::popup_dropdown;
 use cosmic::widget::text_input::secure_input;
@@ -26,12 +26,12 @@ use crate::{audio, cleanup, ipc, secret, stt, typer};
 const TICK: Duration = Duration::from_millis(100);
 /// Level meter smoothing: how much of the previous reading to keep.
 const METER_DECAY: f32 = 0.6;
-/// Offered in the settings dropdown; 0 is fastest, higher values suit
-/// applications that drop keys arriving in the same millisecond.
 /// Popup width. Wider than libcosmic's 360 px default, because the fields
 /// here hold endpoints, API keys, and `op://` references rather than the
 /// short values a panel popup usually shows.
 const POPUP_WIDTH: f32 = 480.0;
+/// Offered in the settings dropdown; 0 is fastest, higher values suit
+/// applications that drop keys arriving in the same millisecond.
 const DELAY_PRESETS: [u64; 6] = [0, 2, 4, 8, 16, 32];
 const DELAY_LABELS: [&str; 6] = ["0 ms", "2 ms", "4 ms", "8 ms", "16 ms", "32 ms"];
 
@@ -233,6 +233,9 @@ impl cosmic::Application for Whispr {
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;
+                    // The notice is a confirmation for whoever is looking at
+                    // the popup, so it belongs to this visit and not the next.
+                    self.notice = None;
                 }
             }
             Message::ConfigChanged(config) => self.config = config,
@@ -319,8 +322,11 @@ impl cosmic::Application for Whispr {
                 return self.edit(|config| config.op_reference = value);
             }
             Message::SaveKey => {
-                let key = std::mem::replace(&mut self.key_input, Zeroizing::new(String::new()));
-                if key.trim().is_empty() {
+                // Copy rather than take: storing fails on a locked or absent
+                // keyring, and emptying the box first would send the user
+                // back to 1Password to copy the key again.
+                let key = Zeroizing::new(self.key_input.trim().to_string());
+                if key.is_empty() {
                     return Task::none();
                 }
                 self.key_busy = true;
@@ -342,9 +348,12 @@ impl cosmic::Application for Whispr {
             Message::KeyStored(result) => {
                 self.key_busy = false;
                 match result {
-                    // The box is already empty; the status line takes over
-                    // from here as the record of what happened.
-                    Ok(()) => self.error = None,
+                    // Safely stored, so the copy in the box can go; the
+                    // status line takes over as the record of what happened.
+                    Ok(()) => {
+                        self.key_input.zeroize();
+                        self.error = None;
+                    }
                     Err(error) => {
                         tracing::error!(%error, "api key");
                         self.error = Some(error);
@@ -419,9 +428,16 @@ impl Whispr {
                     );
                     // The default is a fixed 360 px, which an API key or an
                     // op:// reference has no hope of fitting into.
-                    settings.positioner.size_limits = settings
-                        .positioner
-                        .size_limits
+                    //
+                    // Built from scratch rather than adjusted: the `Limits`
+                    // setters only ever narrow — `max_width` takes a `min`
+                    // with the current value and `min_width` a `max` — so
+                    // widening an existing 360/360 pair is impossible in
+                    // either order, and doing it that way silently left the
+                    // popup at its default.
+                    settings.positioner.size_limits = Limits::NONE
+                        .min_height(1.0)
+                        .max_height(1080.0)
                         .min_width(POPUP_WIDTH)
                         .max_width(POPUP_WIDTH);
                     settings
@@ -465,9 +481,15 @@ impl Whispr {
         }
     }
 
-    /// Toggle from the panel button, which always types.
+    /// Toggle from the panel button or the popup.
+    ///
+    /// It says "type" only when it is the press that starts. Stopping a
+    /// recording that was begun with the clipboard shortcut must not
+    /// redirect it into the window underneath — which, given why someone
+    /// chose the clipboard, could be a password field.
     fn toggle(&mut self) -> Task<Message> {
-        self.toggle_with(Some(ipc::Delivery::Type))
+        let delivery = matches!(self.status, Status::Idle).then_some(ipc::Delivery::Type);
+        self.toggle_with(delivery)
     }
 
     fn toggle_with(&mut self, delivery: Option<ipc::Delivery>) -> Task<Message> {
@@ -630,6 +652,11 @@ impl Whispr {
     fn reset(&mut self, error: Option<String>) {
         if let Some(recorder) = self.recorder.take() {
             recorder.cancel();
+        }
+        // A cancelled or failed dictation must not leave "Copied to
+        // clipboard" sitting under it from the one before.
+        if error.is_some() {
+            self.notice = None;
         }
         if let Some(error) = error {
             tracing::error!(%error, "dictation failed");

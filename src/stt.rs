@@ -80,7 +80,12 @@ pub async fn transcribe(request: Request, wav: Vec<u8>) -> Result<String> {
         return Err(anyhow!("{} — {}", status, describe_error(&body)));
     }
 
+    // A 200 that is not a transcript quotes the body too, and a proxy that
+    // echoes credentials is no less likely to do it with a 200 than a 401.
+    // Only the error is scrubbed: running the transcript itself through the
+    // scanner would edit what the user actually said.
     parse_transcript(&body)
+        .map_err(|error| anyhow!("{}", redact(error.to_string(), request.api_key.as_ref())))
 }
 
 /// Accept both `{"text": "..."}` and the bare text some servers return when
@@ -282,6 +287,18 @@ mod tests {
         // first leaves the head of the key in the message.
         let truncated_first = redact(describe_error(&body), Some(&key));
         assert!(truncated_first.contains("sk-proj"), "{truncated_first}");
+    }
+
+    /// The 200-but-unparseable path quotes the body as well, so it needs the
+    /// same scrubbing the error path gets.
+    #[test]
+    fn a_key_in_an_unparseable_success_body_goes_too() {
+        let key = ApiKey::new("sk-proj-abcdefghijklmnopqrstuvwxyz0123456789");
+        let body = format!(r#"{{"echo":"Bearer {}"}}"#, key.expose());
+
+        let error = parse_transcript(&body).expect_err("no text field");
+        let scrubbed = redact(error.to_string(), Some(&key));
+        assert!(!scrubbed.contains("sk-proj"), "{scrubbed}");
     }
 
     #[test]
