@@ -1,5 +1,5 @@
 name := 'cosmic-whispr'
-appid := 'dev.mhwelsh.CosmicWhispr'
+appid := 'com.kannerwelsh.CosmicWhispr'
 
 rootdir := ''
 prefix := env('HOME') / '.local'

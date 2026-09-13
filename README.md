@@ -24,8 +24,8 @@ Without `just`:
 ```sh
 cargo build --release
 install -Dm0755 target/release/cosmic-whispr ~/.local/bin/cosmic-whispr
-install -Dm0644 data/dev.mhwelsh.CosmicWhispr.desktop \
-    ~/.local/share/applications/dev.mhwelsh.CosmicWhispr.desktop
+install -Dm0644 data/com.kannerwelsh.CosmicWhispr.desktop \
+    ~/.local/share/applications/com.kannerwelsh.CosmicWhispr.desktop
 ```
 
 Then add **Whispr Dictation** in *Settings → Desktop → Panel → Applets*, and

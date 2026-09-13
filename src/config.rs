@@ -8,7 +8,7 @@ use cosmic::cosmic_config::cosmic_config_derive::CosmicConfigEntry;
 use cosmic::cosmic_config::{self, Config, CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 
-pub const APP_ID: &str = "dev.mhwelsh.CosmicWhispr";
+pub const APP_ID: &str = "com.kannerwelsh.CosmicWhispr";
 pub const CONFIG_VERSION: u64 = 1;
 
 /// Consulted only when the keyring has nothing to give — a machine with no
