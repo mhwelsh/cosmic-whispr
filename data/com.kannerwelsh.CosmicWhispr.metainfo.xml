@@ -60,18 +60,13 @@
   <url type="bugtracker">https://github.com/mhwelsh/cosmic-whispr/issues</url>
   <url type="vcs-browser">https://github.com/mhwelsh/cosmic-whispr</url>
 
-  <!--
-    TODO: Flathub requires at least one screenshot, served from a stable URL.
-    Commit a PNG to data/screenshots/ and point at the raw URL on the default
-    branch, which changes if the branch is ever renamed:
-
-    <screenshots>
-      <screenshot type="default">
-        <caption>Dictating from the panel</caption>
-        <image>https://raw.githubusercontent.com/mhwelsh/cosmic-whispr/master/data/screenshots/panel.png</image>
-      </screenshot>
-    </screenshots>
-  -->
+  <!-- Served from the default branch; this URL changes if it is renamed. -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Status, API key and settings in the panel popup</caption>
+      <image>https://raw.githubusercontent.com/mhwelsh/cosmic-whispr/master/data/screenshots/popup.png</image>
+    </screenshot>
+  </screenshots>
 
   <releases>
     <release version="0.1.0" date="2026-09-13">
