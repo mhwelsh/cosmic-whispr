@@ -1,0 +1,68 @@
+# Maintainer: Matt <mhwelsh@gmail.com>
+
+pkgname=cosmic-whispr
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='COSMIC panel applet for dictation: speak, and the transcript is typed into the focused window or copied to the clipboard'
+arch=('x86_64')
+url='https://github.com/mhwelsh/cosmic-whispr'
+license=('MPL-2.0')
+# libwayland-client is opened at runtime rather than linked, so it does not
+# appear in ldd output and has to be listed by hand.
+depends=('alsa-lib' 'gcc-libs' 'glibc' 'libxkbcommon' 'wayland')
+makedepends=('cargo')
+optdepends=(
+	'cosmic-panel: the panel this applet is loaded into'
+	'gnome-keyring: Secret Service implementation to store the API key in'
+	'wl-clipboard: delivery with --clipboard instead of typing'
+	'1password-cli: import the API key from 1Password at setup'
+)
+# makepkg enables LTO globally, which appends -flto to CFLAGS. The `ring`
+# crate compiles its own assembly through cc, and with LTO those objects come
+# out as bitcode whose symbols the final Rust link cannot resolve:
+#   ld.lld: error: undefined symbol: ring_core_0_17_14__p384_elem_mul_mont
+# This only turns off C-level LTO; the release profile in Cargo.toml still
+# asks for thin LTO across the Rust crates.
+options=(!lto)
+
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('af1765d2703bdb625f27fffdb98f9cfad92262b2ce8930899f06e9ffe6fdfb4f')
+
+prepare() {
+	cd "$pkgname-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	# The only step allowed to reach the network. libcosmic is a git
+	# dependency, so this clones it as well as the registry crates.
+	cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+	cd "$pkgname-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	export CARGO_TARGET_DIR=target
+	cargo build --frozen --release
+}
+
+check() {
+	cd "$pkgname-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	export CARGO_TARGET_DIR=target
+	# No test in the default set touches the network or the keyring; the ones
+	# that would are marked #[ignore].
+	cargo test --frozen --release
+}
+
+package() {
+	cd "$pkgname-$pkgver"
+	local appid=com.kannerwelsh.CosmicWhispr
+
+	install -Dm0755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+	# Exec=cosmic-whispr is correct here: /usr/bin is on the panel's PATH,
+	# which is why this does not need the rewrite the justfile does for a
+	# ~/.local install.
+	install -Dm0644 "data/$appid.desktop" \
+		"$pkgdir/usr/share/applications/$appid.desktop"
+	install -Dm0644 "data/$appid.metainfo.xml" \
+		"$pkgdir/usr/share/metainfo/$appid.metainfo.xml"
+	install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

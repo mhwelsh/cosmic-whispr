@@ -13,7 +13,13 @@ microphone ──▶ downmix + resample ──▶ 16 kHz mono 16-bit WAV ──�
 
 ## Install
 
-Requires a Rust toolchain and ALSA development headers.
+On Arch and derivatives, from the AUR:
+
+```sh
+paru -S cosmic-whispr     # or: makepkg -si, from packaging/aur
+```
+
+Otherwise from source. Requires a Rust toolchain and ALSA development headers.
 
 ```sh
 git clone https://github.com/mhwelsh/cosmic-whispr

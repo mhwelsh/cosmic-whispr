@@ -1,0 +1,22 @@
+pkgbase = cosmic-whispr
+	pkgdesc = COSMIC panel applet for dictation: speak, and the transcript is typed into the focused window or copied to the clipboard
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/mhwelsh/cosmic-whispr
+	arch = x86_64
+	license = MPL-2.0
+	makedepends = cargo
+	depends = alsa-lib
+	depends = gcc-libs
+	depends = glibc
+	depends = libxkbcommon
+	depends = wayland
+	optdepends = cosmic-panel: the panel this applet is loaded into
+	optdepends = gnome-keyring: Secret Service implementation to store the API key in
+	optdepends = wl-clipboard: delivery with --clipboard instead of typing
+	optdepends = 1password-cli: import the API key from 1Password at setup
+	options = !lto
+	source = cosmic-whispr-0.1.0.tar.gz::https://github.com/mhwelsh/cosmic-whispr/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = af1765d2703bdb625f27fffdb98f9cfad92262b2ce8930899f06e9ffe6fdfb4f
+
+pkgname = cosmic-whispr
