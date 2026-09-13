@@ -3,8 +3,6 @@
 //! Persisted settings, stored through `cosmic-config` so COSMIC Settings and
 //! the applet see the same values.
 
-use std::path::PathBuf;
-
 use crate::secret;
 use cosmic::cosmic_config::cosmic_config_derive::CosmicConfigEntry;
 use cosmic::cosmic_config::{self, Config, CosmicConfigEntry};
@@ -13,9 +11,10 @@ use serde::{Deserialize, Serialize};
 pub const APP_ID: &str = "dev.mhwelsh.CosmicWhispr";
 pub const CONFIG_VERSION: u64 = 1;
 
-/// Environment variables checked before the env file, so launching the
-/// applet under `op run` works without any file reading of our own.
-pub const API_KEY_ENV: [&str; 2] = secret::KEY_NAMES;
+/// Environment variables checked ahead of the keyring, as a debugging
+/// override — `COSMIC_WHISPR_API_KEY=sk-... cosmic-whispr` runs against a
+/// throwaway key without disturbing what is stored.
+pub const API_KEY_ENV: [&str; 2] = ["COSMIC_WHISPR_API_KEY", "OPENAI_API_KEY"];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
@@ -29,14 +28,17 @@ pub struct WhisprConfig {
     pub language: String,
     /// Optional biasing prompt: jargon, names, or the desired punctuation style.
     pub prompt: String,
-    /// API key stored in the config file. Prefer `env_file` or the
-    /// environment.
-    pub api_key: String,
-    /// Path to a dotenv file defining `COSMIC_WHISPR_API_KEY` or
-    /// `OPENAI_API_KEY`. The value may be a literal key or a
-    /// `op://vault/item/field` reference for the 1Password CLI to resolve.
-    /// `~` is expanded; empty means the default location.
-    pub env_file: String,
+    /// The `op://vault/item/field` reference the key was last imported
+    /// from, remembered so re-importing after a rotation is one click.
+    ///
+    /// This is a reference, not a secret, which is why it can live in the
+    /// plain config file. Nothing reads it to answer "what is the API key" —
+    /// that question is only ever put to the keyring.
+    ///
+    /// The default points at the author's item. It resolves for nobody else,
+    /// since `op` reads whichever account is signed in, so the cost to anyone
+    /// else is one field to overwrite.
+    pub op_reference: String,
     /// Input device name as reported by cpal. Empty means the system default.
     pub input_device: String,
     /// Delay between synthesized keystrokes. 0 is fastest; raise it if a
@@ -62,8 +64,7 @@ impl Default for WhisprConfig {
             model: "whisper-1".into(),
             language: String::new(),
             prompt: String::new(),
-            api_key: String::new(),
-            env_file: String::new(),
+            op_reference: "op://Private/openai-api/credential".into(),
             input_device: String::new(),
             type_delay_ms: 4,
             trailing_space: true,
@@ -95,26 +96,45 @@ impl WhisprConfig {
         }
     }
 
-    /// Path of the env file to read, falling back to the default location.
-    pub fn env_file_path(&self) -> PathBuf {
-        if self.env_file.trim().is_empty() {
-            secret::default_env_file()
-        } else {
-            expand_tilde(self.env_file.trim())
+    /// Move a key left behind by an older version, which kept it in plain
+    /// text in the config file, into the keyring and blank the old entry.
+    ///
+    /// cosmic-config has no "remove", so blanking is the erase. Failures are
+    /// logged and otherwise ignored: the worst case is pasting the key again.
+    pub fn migrate_plaintext_key(handle: &Config) {
+        use cosmic_config::{ConfigGet, ConfigSet};
+
+        let Ok(key) = handle.get::<String>("api_key") else {
+            return;
+        };
+        if key.trim().is_empty() {
+            return;
+        }
+
+        match secret::store(&key) {
+            Ok(()) => {
+                if let Err(error) = handle.set("api_key", String::new()) {
+                    tracing::warn!(%error, "moved the API key to the keyring but could not \
+                                            clear the old plain-text copy");
+                } else {
+                    tracing::info!("moved the API key out of the config file into the keyring");
+                }
+            }
+            Err(error) => tracing::warn!("{error:#}"),
         }
     }
 
     /// Resolve the API key, discarding where it came from.
     ///
-    /// May block: resolving a 1Password reference runs the `op` CLI, which
-    /// can prompt for biometrics. Call it off the UI thread.
+    /// May block: reading the keyring talks to the Secret Service over
+    /// D-Bus, which can raise an unlock prompt. Call it off the UI thread.
     pub fn resolve_api_key(&self) -> Option<String> {
         self.api_key_with_source().map(|(key, _)| key)
     }
 
-    /// Resolve the API key: the environment first, then the env file, then
-    /// the value kept in the config itself. The second element describes the
-    /// source, for `--check` to report without printing the key.
+    /// Resolve the API key: the environment override first, then the
+    /// keyring. The second element describes the source, for `--check` to
+    /// report without printing the key.
     pub fn api_key_with_source(&self) -> Option<(String, String)> {
         for name in API_KEY_ENV {
             if let Ok(key) = std::env::var(name) {
@@ -125,16 +145,14 @@ impl WhisprConfig {
             }
         }
 
-        let path = self.env_file_path();
-        if path.exists() {
-            match secret::read_key(&path) {
-                Ok(resolved) => return Some(resolved),
-                Err(error) => tracing::warn!("{error:#}"),
+        match secret::load() {
+            Ok(Some(key)) => Some((key, "the keyring".to_string())),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!("{error:#}");
+                None
             }
         }
-
-        let key = self.api_key.trim();
-        (!key.is_empty()).then(|| (key.to_string(), "applet settings".to_string()))
     }
 
     /// `{api_base}/audio/transcriptions`, tolerating a trailing slash.
@@ -148,15 +166,5 @@ impl WhisprConfig {
     /// `{api_base}/chat/completions`, for the cleanup pass.
     pub fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
-    }
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    match path.strip_prefix("~/") {
-        Some(rest) => match std::env::var_os("HOME") {
-            Some(home) => PathBuf::from(home).join(rest),
-            None => PathBuf::from(path),
-        },
-        None => PathBuf::from(path),
     }
 }

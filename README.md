@@ -32,8 +32,7 @@ Then add **Whispr Dictation** in *Settings → Desktop → Panel → Applets*, a
 set up the API key:
 
 ```sh
-install -Dm0600 data/env.example ~/.config/cosmic-whispr/.env
-$EDITOR ~/.config/cosmic-whispr/.env
+cosmic-whispr --set-key-from op://Private/OpenAI/credential   # or --set-key
 cosmic-whispr --check
 ```
 
@@ -75,37 +74,46 @@ transcript you actually said, filler words and all.
 
 ### The API key
 
-Resolved in this order, first hit wins:
+The key lives in the **Secret Service keyring** — `gnome-keyring` on Pop!_OS,
+whatever serves `org.freedesktop.secrets` elsewhere — and nowhere else. There
+is no env file and nothing in the config: dictation asks the keyring, every
+time.
 
-1. `$COSMIC_WHISPR_API_KEY`, then `$OPENAI_API_KEY`, from the process environment
-2. the env file — `~/.config/cosmic-whispr/.env` unless the applet settings name another path
-3. the value stored in the applet settings
-
-The env file is ordinary dotenv syntax, and the value may be either the key
-itself or a 1Password secret reference:
+Three ways to put it there, all equivalent:
 
 ```sh
-# ~/.config/cosmic-whispr/.env
-OPENAI_API_KEY="op://Private/OpenAI/credential"
+cosmic-whispr --set-key < key.txt                             # from a file
+pbpaste | cosmic-whispr --set-key                             # from the clipboard
+cosmic-whispr --set-key-from op://Private/OpenAI/credential   # from 1Password
 ```
 
-A value starting with `op://` is resolved by running `op read`, so the secret
-is never written to disk. This needs the [1Password CLI][op] with desktop app
-integration enabled; the applet does not have to be launched under `op run`.
+`--set-key` reads stdin rather than an argument, so the key never reaches your
+shell history or `ps`. Running it with a terminal attached prompts you to paste
+and press Ctrl-D.
 
-A resolved reference is kept in memory for the life of the applet, so a
-1Password setup that prompts for biometrics prompts once rather than once per
-sentence — the trade is that a rotated secret needs a restart to pick up.
-If `op` blocks for more than 30 seconds, the dictation fails rather than
-hanging.
+Or open the applet popup: paste into the **API key** box and press Save, or put
+an `op://` reference in the **From 1Password** box and press Fetch. Both write
+to the keyring; the reference is remembered in the config so re-importing after
+a rotation is one click. `cosmic-whispr --clear-key` forgets the key again.
 
-### Getting the key into 1Password
+`$COSMIC_WHISPR_API_KEY` (or `$OPENAI_API_KEY`) still overrides the keyring
+when set. That is for trying a throwaway key without disturbing the saved one,
+not for everyday use.
+
+### Importing from 1Password
+
+`--set-key-from` and the Fetch button run `op read` **once**, at setup, and put
+what comes back into the keyring. Given no reference, `--set-key-from` uses the
+one in the applet settings, so re-importing after a rotation is a bare
+`cosmic-whispr --set-key-from`. `op` never runs while you are dictating, so a
+1Password setup that prompts for biometrics prompts when you press Fetch and
+never mid-sentence. If `op` blocks for more than 30 seconds the import fails
+rather than hanging.
 
 Install the CLI (`paru -S 1password-cli`), then turn on *Settings → Developer →
-Integrate with 1Password CLI* in the 1Password app. That step matters more than
-usual here: cosmic-panel launches the applet with no terminal, so a session
-token from `op signin` in your shell would never reach it. With integration on,
-`op` talks to the running app over a local socket and raises a GUI prompt.
+Integrate with 1Password CLI* in the 1Password app. With integration on, `op`
+talks to the running app over a local socket and raises a GUI prompt, which
+matters because cosmic-panel launches the applet with no terminal.
 
 Create the item in the app — *New Item → API Credential*, titled `OpenAI`, key
 pasted into the **credential** field — then right-click that field and choose
@@ -130,25 +138,10 @@ Then verify the two halves separately:
 
 ```sh
 op read "op://Private/OpenAI/credential"   # 1Password half
-cosmic-whispr --check                      # applet half — should say "via 1Password"
+cosmic-whispr --check                      # applet half — "Stored in the keyring"
 ```
 
-**Or launch the applet under `op run`.** If you would rather 1Password inject
-the variable, point the desktop entry at it and the env file is never read by
-us at all — step 1 above catches it:
-
-```ini
-# ~/.local/share/applications/dev.mhwelsh.CosmicWhispr.desktop
-Exec=op run --env-file=/home/you/.config/cosmic-whispr/.env -- cosmic-whispr
-```
-
-Desktop entries take no `~` and no field code for the home directory, so spell
-the path out. This way a rotated secret is picked up whenever the panel
-restarts the applet, but `op` must be able to authenticate without a terminal.
-
-`chmod 600` the env file either way; the applet warns if other users can read
-it. Whatever you do, prefer these to the third option: the applet config is
-plain RON under `~/.config/cosmic/dev.mhwelsh.CosmicWhispr/`.
+Rotating the key is the same command again; the keyring copy is replaced.
 
 [op]: https://developer.1password.com/docs/cli/get-started/
 
@@ -182,9 +175,11 @@ microphone and the network. If characters arrive garbled or are dropped, raise
 *Keystroke delay* in the applet settings — some Electron and Java applications
 ignore keys that arrive in the same millisecond.
 
-**"api key: NOT SET".** `--check` prints the env file it looked at and what it
-found there. If the value is a 1Password reference, the warning above that line
-carries `op`'s own error message.
+**"in use: NOT SET".** `--check` prints what the keyring holds. "No key saved
+yet" means run `--set-key` or `--set-key-from`. "Keyring unavailable" means
+nothing is serving `org.freedesktop.secrets` — check that `gnome-keyring-daemon`
+is running with its `secrets` component, and that the login keyring is unlocked.
+A failed `--set-key-from` carries `op`'s own error message.
 
 **"no audio captured".** The microphone is muted or the wrong device is
 selected; `--list-devices` shows the alternatives.
@@ -198,7 +193,7 @@ For logs, run the binary from a terminal with `COSMIC_WHISPR_LOG=debug`.
 | `src/audio.rs` | cpal capture on its own thread; downmix, silence trim, band-limited resample to 16 kHz, WAV encode |
 | `src/stt.rs` | Multipart POST to `/audio/transcriptions`; unwraps `{"text": …}` and surfaces API error messages |
 | `src/typer.rs` | Builds a throwaway XKB keymap where each character gets a one-level key, then presses those keys through `zwp_virtual_keyboard_v1` |
-| `src/secret.rs` | Reads the API key from a dotenv file, resolving `op://` references through the 1Password CLI |
+| `src/secret.rs` | Stores and reads the API key in the Secret Service keyring; imports one from the 1Password CLI at setup |
 | `src/cleanup.rs` | Optional second pass to strip disfluencies, with a guard that discards any reply that is not an edit of the transcript |
 | `src/ipc.rs` | Unix socket at `$XDG_RUNTIME_DIR/cosmic-whispr.sock`, so a shortcut can drive the applet without stealing focus |
 | `src/app.rs` | The applet: `Idle → Starting → Recording → Transcribing → Typing` |

@@ -169,9 +169,16 @@ mod tests {
     #[tokio::test]
     async fn live_model_output_passes_the_plausibility_rule() {
         let (_, config) = crate::config::WhisprConfig::load();
+        // Reading the key talks to the keyring over D-Bus, which blocks.
+        let api_key = {
+            let config = config.clone();
+            tokio::task::spawn_blocking(move || config.resolve_api_key())
+                .await
+                .expect("api key lookup")
+        };
         let request = Request {
             url: config.chat_url(),
-            api_key: config.resolve_api_key(),
+            api_key,
             model: config.cleanup_model.clone(),
         };
 

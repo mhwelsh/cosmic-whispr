@@ -11,6 +11,7 @@ use cosmic::iced::window::Id;
 use cosmic::iced::{Alignment, Length, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::widget::dropdown::popup_dropdown;
+use cosmic::widget::text_input::secure_input;
 use cosmic::widget::{
     button, column, divider, list_column, mouse_area, progress_bar, row, settings, text,
     text_input, toggler,
@@ -18,7 +19,7 @@ use cosmic::widget::{
 use cosmic::{Element, cosmic_config};
 
 use crate::config::{APP_ID, WhisprConfig};
-use crate::{audio, cleanup, ipc, stt, typer};
+use crate::{audio, cleanup, ipc, secret, stt, typer};
 
 /// How often the level meter and elapsed timer refresh while recording.
 const TICK: Duration = Duration::from_millis(100);
@@ -26,6 +27,10 @@ const TICK: Duration = Duration::from_millis(100);
 const METER_DECAY: f32 = 0.6;
 /// Offered in the settings dropdown; 0 is fastest, higher values suit
 /// applications that drop keys arriving in the same millisecond.
+/// Popup width. Wider than libcosmic's 360 px default, because the fields
+/// here hold endpoints, API keys, and `op://` references rather than the
+/// short values a panel popup usually shows.
+const POPUP_WIDTH: f32 = 480.0;
 const DELAY_PRESETS: [u64; 6] = [0, 2, 4, 8, 16, 32];
 const DELAY_LABELS: [&str; 6] = ["0 ms", "2 ms", "4 ms", "8 ms", "16 ms", "32 ms"];
 
@@ -80,6 +85,17 @@ pub struct Whispr {
     /// can borrow it for a render.
     device_labels: Vec<String>,
     can_type: bool,
+    /// What the user has typed into the API key box. Deliberately transient:
+    /// it is cleared the moment the key reaches the keyring, and is never
+    /// written to the config.
+    key_input: String,
+    /// Whether the key box masks what it holds.
+    key_hidden: bool,
+    /// Cached answer to "what does the keyring hold". Refreshed by a task,
+    /// because answering it means a D-Bus round trip and `view` cannot block.
+    key_status: secret::Status,
+    /// A key operation is in flight; the buttons stay inert until it lands.
+    key_busy: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -106,12 +122,21 @@ pub enum Message {
     ModelChanged(String),
     LanguageChanged(String),
     PromptChanged(String),
-    EnvFileChanged(String),
     DeviceSelected(usize),
     TypeDelaySelected(usize),
     TrailingSpaceToggled(bool),
     CleanupToggled(bool),
     CleanupModelChanged(String),
+
+    // API key
+    KeyInputChanged(String),
+    KeyVisibilityToggled,
+    SaveKey,
+    OpReferenceChanged(String),
+    ImportKey,
+    ClearKey,
+    KeyStored(Result<(), String>),
+    KeyStatusLoaded(secret::Status),
 }
 
 impl cosmic::Application for Whispr {
@@ -154,9 +179,13 @@ impl cosmic::Application for Whispr {
                 .collect(),
             devices,
             can_type,
+            key_input: String::new(),
+            key_hidden: true,
+            key_status: secret::Status::Empty,
+            key_busy: false,
         };
 
-        (applet, Task::none())
+        (applet, refresh_key_status())
     }
 
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
@@ -241,9 +270,7 @@ impl cosmic::Application for Whispr {
             Message::ModelChanged(value) => return self.edit(|config| config.model = value),
             Message::LanguageChanged(value) => return self.edit(|config| config.language = value),
             Message::PromptChanged(value) => return self.edit(|config| config.prompt = value),
-            Message::EnvFileChanged(value) => {
-                return self.edit(|config| config.env_file = value);
-            }
+
             Message::DeviceSelected(index) => {
                 // Index 0 is the "System default" entry.
                 let device = match index.checked_sub(1) {
@@ -263,6 +290,47 @@ impl cosmic::Application for Whispr {
             Message::CleanupModelChanged(value) => {
                 return self.edit(|config| config.cleanup_model = value);
             }
+
+            Message::KeyInputChanged(value) => self.key_input = value,
+            Message::KeyVisibilityToggled => self.key_hidden = !self.key_hidden,
+            Message::OpReferenceChanged(value) => {
+                return self.edit(|config| config.op_reference = value);
+            }
+            Message::SaveKey => {
+                let key = std::mem::take(&mut self.key_input);
+                if key.trim().is_empty() {
+                    return Task::none();
+                }
+                self.key_busy = true;
+                return store_key(move || secret::store(&key));
+            }
+            Message::ImportKey => {
+                let reference = self.config.op_reference.clone();
+                if reference.trim().is_empty() {
+                    return Task::none();
+                }
+                self.key_busy = true;
+                return store_key(move || secret::import_reference(&reference));
+            }
+            Message::ClearKey => {
+                self.key_input.clear();
+                self.key_busy = true;
+                return store_key(secret::clear);
+            }
+            Message::KeyStored(result) => {
+                self.key_busy = false;
+                match result {
+                    // The box is already empty; the status line takes over
+                    // from here as the record of what happened.
+                    Ok(()) => self.error = None,
+                    Err(error) => {
+                        tracing::error!(%error, "api key");
+                        self.error = Some(error);
+                    }
+                }
+                return refresh_key_status();
+            }
+            Message::KeyStatusLoaded(status) => self.key_status = status,
         }
 
         Task::none()
@@ -320,13 +388,21 @@ impl Whispr {
                 |state: &mut Whispr| {
                     let id = Id::unique();
                     state.popup = Some(id);
-                    state.core.applet.get_popup_settings(
+                    let mut settings = state.core.applet.get_popup_settings(
                         state.core.main_window_id().unwrap(),
                         id,
                         None,
                         None,
                         None,
-                    )
+                    );
+                    // The default is a fixed 360 px, which an API key or an
+                    // op:// reference has no hope of fitting into.
+                    settings.positioner.size_limits = settings
+                        .positioner
+                        .size_limits
+                        .min_width(POPUP_WIDTH)
+                        .max_width(POPUP_WIDTH);
+                    settings
                 },
                 Some(Box::new(|state: &Whispr| {
                     Element::from(state.core.applet.popup_container(state.popup_view()))
@@ -545,6 +621,10 @@ impl Whispr {
         content = content.push(cosmic::applet::padded_control(
             divider::horizontal::default(),
         ));
+        content = content.push(self.api_key_view());
+        content = content.push(cosmic::applet::padded_control(
+            divider::horizontal::default(),
+        ));
         content = content.push(self.settings_view());
 
         content.into()
@@ -600,6 +680,62 @@ impl Whispr {
         cosmic::applet::padded_control(children).into()
     }
 
+    /// The API key section: paste a key, or fetch one from 1Password. Both
+    /// paths end in the keyring, which is the only place the key is read
+    /// from later.
+    fn api_key_view(&self) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
+        let ready = !self.key_busy;
+        let has_key = matches!(self.key_status, secret::Status::Stored { .. });
+
+        let save = (ready && !self.key_input.trim().is_empty()).then_some(Message::SaveKey);
+        let import =
+            (ready && !self.config.op_reference.trim().is_empty()).then_some(Message::ImportKey);
+
+        let key_row = row::with_capacity(2)
+            .spacing(spacing.space_xxs)
+            .align_y(Alignment::Center)
+            .push(
+                secure_input(
+                    "paste your API key",
+                    &self.key_input,
+                    Some(Message::KeyVisibilityToggled),
+                    self.key_hidden,
+                )
+                .width(Length::Fill)
+                .on_input(Message::KeyInputChanged)
+                .on_submit(|_| Message::SaveKey),
+            )
+            .push(button::standard("Save").on_press_maybe(save));
+
+        let op_row = row::with_capacity(2)
+            .spacing(spacing.space_xxs)
+            .align_y(Alignment::Center)
+            .push(
+                text_input("op://Private/OpenAI/credential", &self.config.op_reference)
+                    .width(Length::Fill)
+                    .on_input(Message::OpReferenceChanged)
+                    .on_submit(|_| Message::ImportKey),
+            )
+            .push(button::standard("Fetch").on_press_maybe(import));
+
+        let mut status = row::with_capacity(2)
+            .spacing(spacing.space_xs)
+            .align_y(Alignment::Center)
+            .push(text::caption(self.key_status.describe()).width(Length::Fill));
+        if has_key {
+            status = status.push(
+                button::text("Remove").on_press_maybe(ready.then_some(Message::ClearKey)),
+            );
+        }
+
+        list_column()
+            .add(stacked("API key", key_row))
+            .add(status)
+            .add(stacked("Import from 1Password", op_row))
+            .into()
+    }
+
     fn settings_view(&self) -> Element<'_, Message> {
         let popup = self.popup.unwrap_or(Id::NONE);
 
@@ -626,28 +762,29 @@ impl Whispr {
                     |message| message,
                 ),
             ))
-            .add(settings::item(
+            .add(stacked(
                 "Endpoint",
                 text_input("https://api.openai.com/v1", &self.config.api_base)
+                    .width(Length::Fill)
                     .on_input(Message::ApiBaseChanged),
             ))
-            .add(settings::item(
+            .add(stacked(
                 "Model",
-                text_input("whisper-1", &self.config.model).on_input(Message::ModelChanged),
+                text_input("whisper-1", &self.config.model)
+                    .width(Length::Fill)
+                    .on_input(Message::ModelChanged),
             ))
-            .add(settings::item(
+            .add(stacked(
                 "Language",
-                text_input("auto", &self.config.language).on_input(Message::LanguageChanged),
+                text_input("auto", &self.config.language)
+                    .width(Length::Fill)
+                    .on_input(Message::LanguageChanged),
             ))
-            .add(settings::item(
+            .add(stacked(
                 "Prompt",
                 text_input("names, jargon, punctuation style", &self.config.prompt)
+                    .width(Length::Fill)
                     .on_input(Message::PromptChanged),
-            ))
-            .add(settings::item(
-                "Env file",
-                text_input("~/.config/cosmic-whispr/.env", &self.config.env_file)
-                    .on_input(Message::EnvFileChanged),
             ))
             .add(settings::item(
                 "Keystroke delay",
@@ -664,9 +801,10 @@ impl Whispr {
                 "Clean up filler words",
                 toggler(self.config.cleanup).on_toggle(Message::CleanupToggled),
             ))
-            .add(settings::item(
+            .add(stacked(
                 "Cleanup model",
                 text_input("gpt-5.4-nano", &self.config.cleanup_model)
+                    .width(Length::Fill)
                     .on_input(Message::CleanupModelChanged),
             ))
             .add(settings::item(
@@ -685,6 +823,52 @@ fn delay_index(delay_ms: u64) -> Option<usize> {
         .enumerate()
         .min_by_key(|(_, preset)| preset.abs_diff(delay_ms))
         .map(|(index, _)| index)
+}
+
+/// A settings row with its label on its own line above the control.
+///
+/// `settings::item` lays the label and the control out side by side with a
+/// spacer between them, which leaves a text field a sliver of the popup.
+/// Long values need the width more than the label needs company.
+fn stacked<'a>(label: &'a str, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    column::with_capacity(2)
+        .spacing(cosmic::theme::spacing().space_xxxs)
+        .width(Length::Fill)
+        .push(text::body(label))
+        .push(control.into())
+        .into()
+}
+
+/// Ask the keyring what it holds, off the UI thread.
+fn refresh_key_status() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(secret::status)
+                .await
+                .unwrap_or_else(|error| {
+                    secret::Status::Unavailable(format!("status task failed: {error}"))
+                })
+        },
+        |status| cosmic::Action::App(Message::KeyStatusLoaded(status)),
+    )
+}
+
+/// Run a keyring write off the UI thread.
+///
+/// The closure owns the secret, so it never has to travel back through a
+/// message: the reply is only whether it worked.
+fn store_key(
+    operation: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(operation)
+                .await
+                .map_err(|error| format!("keyring task failed: {error}"))?
+                .map_err(|error| format!("{error:#}"))
+        },
+        |result| cosmic::Action::App(Message::KeyStored(result)),
+    )
 }
 
 fn format_duration(duration: Duration) -> String {
