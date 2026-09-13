@@ -45,15 +45,18 @@ no key at all; the key is only ever sent over HTTPS or to a loopback address.
 
 ## Use
 
-Bind shortcuts in *Settings → Desktop → Keyboard Shortcuts*:
+Nothing is bound by default. Add custom shortcuts in *Settings → Desktop →
+Keyboard Shortcuts* for whichever of these you want, on whatever keys are
+free for you:
 
-| Shortcut | Command | Effect |
-| --- | --- | --- |
-| Super+D | `cosmic-whispr --toggle` | Type into the focused window |
-| Super+Shift+D | `cosmic-whispr --toggle --clipboard` | Copy it instead |
+| Command | Effect |
+| --- | --- |
+| `cosmic-whispr --toggle` | Type into the focused window |
+| `cosmic-whispr --toggle --clipboard` | Copy it instead |
 
-Whichever shortcut starts the recording decides where the transcript goes.
-`--clipboard` needs `wl-clipboard` installed.
+Binding both gives you a key for each destination. Whichever one starts the
+recording decides where that transcript goes. `--clipboard` needs
+`wl-clipboard` installed.
 
 Left-click the panel icon to start and stop, right-click for settings and the
 last transcript. A shortcut is better than clicking, which moves keyboard

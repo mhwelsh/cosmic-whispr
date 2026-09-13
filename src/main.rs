@@ -46,16 +46,13 @@ Bind --toggle to a keyboard shortcut in COSMIC Settings: clicking the panel
 icon moves keyboard focus to the panel, while a shortcut leaves focus in the
 window you are dictating into.
 
-Two shortcuts make both delivery modes reachable — say Super+D for
-
-    cosmic-whispr --toggle
-
-and Super+Shift+D for
+Binding a second shortcut to
 
     cosmic-whispr --toggle --clipboard
 
-which copies instead of typing, for dictating somewhere that keystrokes would
-go to the wrong place. The press that starts a recording picks the mode.
+gives you a key for each destination: that one copies instead of typing, for
+dictating somewhere keystrokes would go to the wrong place. The press that
+starts a recording picks the mode.
 
 The API key lives in the Secret Service keyring, and nowhere else. Paste it
 into the settings popup, or pipe it in so it never reaches your shell history:
