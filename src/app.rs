@@ -8,11 +8,12 @@ use std::time::Duration;
 use cosmic::app::{Core, Task};
 use cosmic::iced::core::window;
 use cosmic::iced::window::Id;
-use cosmic::iced::{Alignment, Length, Rectangle, Subscription};
+use cosmic::iced::{Alignment, Length, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::widget::dropdown::popup_dropdown;
 use cosmic::widget::{
-    button, column, divider, list_column, progress_bar, row, settings, text, text_input, toggler,
+    button, column, divider, list_column, mouse_area, progress_bar, row, settings, text,
+    text_input, toggler,
 };
 use cosmic::{Element, cosmic_config};
 
@@ -85,6 +86,7 @@ pub struct Whispr {
 pub enum Message {
     // Shell plumbing
     Surface(cosmic::surface::Action<Message>),
+    TogglePopup,
     PopupClosed(Id),
     ConfigChanged(WhisprConfig),
     Tick,
@@ -182,6 +184,7 @@ impl cosmic::Application for Whispr {
             Message::Surface(action) => {
                 return cosmic::task::message(cosmic::Action::Surface(action));
             }
+            Message::TogglePopup => return self.toggle_popup(),
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;
@@ -266,52 +269,31 @@ impl cosmic::Application for Whispr {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let have_popup = self.popup;
+        // Left click dictates, because that is the action taken every time;
+        // right click opens the popup, which is for the rare visit.
         let button = self
             .core
             .applet
             .icon_button(self.status.icon())
-            .on_press_with_rectangle(move |offset, bounds| match have_popup {
-                Some(id) => Message::Surface(destroy_popup(id)),
-                None => Message::Surface(app_popup::<Whispr>(
-                    |_| Default::default(),
-                    move |state: &mut Whispr| {
-                        let id = Id::unique();
-                        state.popup = Some(id);
-                        let mut settings = state.core.applet.get_popup_settings(
-                            state.core.main_window_id().unwrap(),
-                            id,
-                            None,
-                            None,
-                            None,
-                        );
-                        settings.positioner.anchor_rect = Rectangle {
-                            x: (bounds.x - offset.x) as i32,
-                            y: (bounds.y - offset.y) as i32,
-                            width: bounds.width as i32,
-                            height: bounds.height as i32,
-                        };
-                        settings
-                    },
-                    Some(Box::new(|state: &Whispr| {
-                        Element::from(state.core.applet.popup_container(state.popup_view()))
-                            .map(cosmic::Action::App)
-                    })),
-                )),
-            });
+            .on_press(Message::Toggle);
 
         let tooltip = match self.status {
+            Status::Idle => "Click to dictate, right-click for settings".to_string(),
             Status::Recording => format!("Recording — {}", format_duration(self.elapsed)),
             other => other.label().to_string(),
         };
 
-        Element::from(self.core.applet.applet_tooltip::<Message>(
+        let tooltip = self.core.applet.applet_tooltip::<Message>(
             button,
             tooltip,
             self.popup.is_some(),
             Message::Surface,
             None,
-        ))
+        );
+
+        mouse_area(tooltip)
+            .on_right_press(Message::TogglePopup)
+            .into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Message> {
@@ -325,6 +307,37 @@ impl cosmic::Application for Whispr {
 }
 
 impl Whispr {
+    /// Open the popup, or close it if it is already open.
+    ///
+    /// The default anchor rectangle is the whole applet surface, which is
+    /// exactly this applet's single button, so unlike the libcosmic example
+    /// there is no rectangle to thread through from the press.
+    fn toggle_popup(&mut self) -> Task<Message> {
+        let action = match self.popup.take() {
+            Some(id) => destroy_popup(id),
+            None => app_popup::<Whispr>(
+                |_| Default::default(),
+                |state: &mut Whispr| {
+                    let id = Id::unique();
+                    state.popup = Some(id);
+                    state.core.applet.get_popup_settings(
+                        state.core.main_window_id().unwrap(),
+                        id,
+                        None,
+                        None,
+                        None,
+                    )
+                },
+                Some(Box::new(|state: &Whispr| {
+                    Element::from(state.core.applet.popup_container(state.popup_view()))
+                        .map(cosmic::Action::App)
+                })),
+            ),
+        };
+
+        cosmic::task::message(cosmic::Action::Surface(action))
+    }
+
     fn handle_control(&mut self, command: ipc::Command) -> Task<Message> {
         match command {
             ipc::Command::Toggle => self.toggle(),

@@ -158,9 +158,12 @@ Bind a keyboard shortcut to `cosmic-whispr --toggle` in
 *Settings → Desktop → Keyboard Shortcuts*. Press it to start, press it again
 to stop; the transcript is typed where your cursor already is.
 
-The shortcut is the intended workflow. Clicking the panel icon works too, but
-clicking moves keyboard focus to the panel — the applet closes its popup
-before typing so focus returns, which is one more thing that can go wrong.
+**Left-click the icon to start and stop dictating; right-click for the popup**
+with status, settings, and the last transcript.
+
+A keyboard shortcut still beats both, and is worth binding: a left click lands
+on the panel rather than the window you are dictating into, and while COSMIC
+returns focus afterwards, a shortcut never moves it in the first place.
 
 | Command | Effect |
 | --- | --- |
