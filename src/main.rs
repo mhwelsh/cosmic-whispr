@@ -123,7 +123,7 @@ fn main() -> cosmic::iced::Result {
 /// Absent means "whatever the recording already chose", which is what lets
 /// the two presses of a toggle disagree harmlessly.
 fn delivery(arguments: &mut impl Iterator<Item = String>) -> Option<ipc::Delivery> {
-    match arguments.next().as_deref() {
+    let delivery = match arguments.next().as_deref() {
         None => None,
         Some("--clipboard") => Some(ipc::Delivery::Clipboard),
         Some("--type") => Some(ipc::Delivery::Type),
@@ -132,7 +132,17 @@ fn delivery(arguments: &mut impl Iterator<Item = String>) -> Option<ipc::Deliver
             print!("{HELP}");
             std::process::exit(2);
         }
+    };
+
+    // Say so rather than ignoring it: a dropped argument looks like it
+    // worked, which is the worst way for a typo to behave.
+    if let Some(extra) = arguments.next() {
+        eprintln!("cosmic-whispr: unexpected argument {extra:?}\n");
+        print!("{HELP}");
+        std::process::exit(2);
     }
+
+    delivery
 }
 
 /// Report what the applet would do, without recording or typing anything.
@@ -220,12 +230,21 @@ fn check() {
 fn set_key() -> cosmic::iced::Result {
     use std::io::Read;
 
+
     if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         eprintln!("Paste the API key, then press Enter and Ctrl-D:");
     }
 
+    // A key is a couple of hundred bytes. Reading without a bound means a
+    // mistyped redirect — `--set-key < /dev/urandom` — eats memory until it
+    // is killed, and every byte of it would be a byte we then try to store.
+    const MOST_A_KEY_COULD_BE: u64 = 8 * 1024;
+
     let mut key = zeroize::Zeroizing::new(String::new());
-    if let Err(error) = std::io::stdin().read_to_string(&mut key) {
+    if let Err(error) = std::io::stdin()
+        .take(MOST_A_KEY_COULD_BE)
+        .read_to_string(&mut key)
+    {
         eprintln!("cosmic-whispr: cannot read the key from stdin: {error}");
         std::process::exit(1);
     }

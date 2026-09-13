@@ -42,8 +42,8 @@ enum Status {
     Starting,
     Recording,
     Transcribing,
-    /// Delivering the transcript, by whichever route was chosen.
-    Typing,
+    /// Handing the transcript over, by whichever route was chosen.
+    Delivering,
 }
 
 impl Status {
@@ -51,7 +51,7 @@ impl Status {
         match self {
             Self::Idle => "audio-input-microphone-symbolic",
             Self::Starting | Self::Recording => "media-record-symbolic",
-            Self::Transcribing | Self::Typing => "content-loading-symbolic",
+            Self::Transcribing | Self::Delivering => "content-loading-symbolic",
         }
     }
 
@@ -61,12 +61,12 @@ impl Status {
             Self::Starting => "Opening microphone…",
             Self::Recording => "Recording",
             Self::Transcribing => "Transcribing…",
-            Self::Typing => "Typing…",
+            Self::Delivering => "Delivering…",
         }
     }
 
     fn is_busy(self) -> bool {
-        matches!(self, Self::Transcribing | Self::Typing)
+        matches!(self, Self::Transcribing | Self::Delivering)
     }
 }
 
@@ -128,7 +128,7 @@ pub enum Message {
     RecordingReady(Result<String, String>),
     RecordingFinished(Result<audio::Recording, String>),
     Transcribed(Result<String, String>),
-    Typed(Result<(), String>),
+    Delivered(Result<(), String>),
     DismissError,
 
     // Settings
@@ -276,14 +276,14 @@ impl cosmic::Application for Whispr {
                 if transcript.is_empty() {
                     self.reset(Some("nothing was recognized".into()));
                 } else {
-                    self.status = Status::Typing;
+                    self.status = Status::Delivering;
                     return self.deliver(transcript);
                 }
             }
             Message::Transcribed(Err(error)) => self.reset(Some(error)),
 
-            Message::Typed(Ok(())) => self.reset(None),
-            Message::Typed(Err(error)) => self.reset(Some(error)),
+            Message::Delivered(Ok(())) => self.reset(None),
+            Message::Delivered(Err(error)) => self.reset(Some(error)),
 
             Message::ApiBaseChanged(value) => return self.edit(|config| config.api_base = value),
             Message::ModelChanged(value) => return self.edit(|config| config.model = value),
@@ -484,7 +484,7 @@ impl Whispr {
             }
             // Ignore a toggle that lands mid-transcription rather than
             // queueing a second recording behind it.
-            Status::Transcribing | Status::Typing => Task::none(),
+            Status::Transcribing | Status::Delivering => Task::none(),
         }
     }
 
@@ -553,8 +553,9 @@ impl Whispr {
 
         Task::perform(
             async move {
-                // Resolving the key may run the 1Password CLI, which can
-                // block on a biometric prompt; keep it off the UI thread.
+                // Reading the keyring is a blocking D-Bus round trip, and a
+                // locked keyring can raise an unlock prompt; keep it off the
+                // UI thread.
                 let api_key = tokio::task::spawn_blocking(move || config.resolve_api_key())
                     .await
                     .map_err(|error| format!("api key lookup failed: {error}"))?;
@@ -592,21 +593,25 @@ impl Whispr {
 
     /// Send the transcript wherever this recording was headed.
     fn deliver(&mut self, transcript: String) -> Task<Message> {
+        if self.delivery == ipc::Delivery::Clipboard {
+            // No trailing space here: that setting exists so consecutive
+            // dictations do not run together as they are typed, and a
+            // clipboard copy has no such neighbour — it would just be a
+            // stray space on the end of every paste.
+            //
+            // Nothing is typed either, so nothing on screen would otherwise
+            // show that the dictation worked.
+            self.notice = Some("Copied to clipboard".to_string());
+            return Task::batch([
+                cosmic::iced::clipboard::write(transcript),
+                cosmic::task::message(cosmic::Action::App(Message::Delivered(Ok(())))),
+            ]);
+        }
+
         let mut text = transcript;
         if self.config.trailing_space {
             text.push(' ');
         }
-
-        if self.delivery == ipc::Delivery::Clipboard {
-            // Nothing is typed, so nothing on screen would otherwise show
-            // that the dictation worked.
-            self.notice = Some("Copied to clipboard".to_string());
-            return Task::batch([
-                cosmic::iced::clipboard::write(text),
-                cosmic::task::message(cosmic::Action::App(Message::Typed(Ok(())))),
-            ]);
-        }
-
         let delay = Duration::from_millis(self.config.type_delay_ms);
 
         Task::perform(
@@ -617,7 +622,7 @@ impl Whispr {
                     .map_err(|error| format!("typing task failed: {error}"))?
                     .map_err(|error| format!("{error:#}"))
             },
-            |result| cosmic::Action::App(Message::Typed(result)),
+            |result| cosmic::Action::App(Message::Delivered(result)),
         )
     }
 
@@ -698,7 +703,8 @@ impl Whispr {
     /// `Status::label`, corrected for a delivery that does no typing.
     fn status_label(&self) -> &'static str {
         match (self.status, self.delivery) {
-            (Status::Typing, ipc::Delivery::Clipboard) => "Copying…",
+            (Status::Delivering, ipc::Delivery::Clipboard) => "Copying…",
+            (Status::Delivering, ipc::Delivery::Type) => "Typing…",
             (status, _) => status.label(),
         }
     }
@@ -974,6 +980,6 @@ mod tests {
         assert!(!Status::Idle.is_busy());
         assert!(!Status::Recording.is_busy());
         assert!(Status::Transcribing.is_busy());
-        assert!(Status::Typing.is_busy());
+        assert!(Status::Delivering.is_busy());
     }
 }

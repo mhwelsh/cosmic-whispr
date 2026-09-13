@@ -10,13 +10,22 @@
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use cosmic::iced::Subscription;
 use cosmic::iced::futures::SinkExt;
 use cosmic::iced::stream;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+
+/// Longest command we will read. The longest real one is "toggle clipboard".
+const LONGEST_COMMAND: u64 = 64;
+
+/// A client that connects and then says nothing gets this long to speak.
+/// Each connection is read on its own task, so a stalled peer costs only its
+/// own task — but it should not sit there forever either.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where a finished transcript goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -215,13 +224,21 @@ pub fn listen() -> Subscription<Command> {
                 loop {
                     match listener.accept().await {
                         Ok((connection, _)) => {
-                            if let Some(command) = read_command(connection).await {
-                                let _ = output.send(command).await;
-                            }
+                            // Read on its own task rather than inline. The
+                            // accept loop is single-threaded, so reading here
+                            // would let one peer that connects and says
+                            // nothing delay every shortcut behind it for as
+                            // long as it cared to hold the connection.
+                            let mut output = output.clone();
+                            tokio::spawn(async move {
+                                if let Some(command) = read_command(connection).await {
+                                    let _ = output.send(command).await;
+                                }
+                            });
                         }
                         Err(error) => {
                             tracing::warn!(%error, "control socket accept failed");
-                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            tokio::time::sleep(Duration::from_secs(1)).await;
                         }
                     }
                 }
@@ -232,17 +249,23 @@ pub fn listen() -> Subscription<Command> {
 
 async fn read_command(connection: UnixStream) -> Option<Command> {
     let mut line = String::new();
-    match BufReader::new(connection).read_line(&mut line).await {
-        Ok(0) => None,
-        Ok(_) => {
+    let mut reader = BufReader::new(connection.take(LONGEST_COMMAND));
+
+    match tokio::time::timeout(READ_TIMEOUT, reader.read_line(&mut line)).await {
+        Ok(Ok(0)) => None,
+        Ok(Ok(_)) => {
             let command = Command::parse(&line);
             if command.is_none() {
                 tracing::warn!(?line, "unknown control command");
             }
             command
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(%error, "cannot read from the control socket");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("a control connection sent nothing; dropping it");
             None
         }
     }

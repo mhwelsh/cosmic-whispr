@@ -106,10 +106,8 @@ async fn clean(request: Request, transcript: &str) -> Result<String> {
     let body = response.text().await.context("cannot read the reply")?;
     if !status.is_success() {
         // This one only ever reaches the log, but the log is a file.
-        return Err(anyhow!(
-            "{status} — {}",
-            crate::stt::redact(crate::stt::describe_error(&body), request.api_key.as_ref())
-        ));
+        let body = crate::stt::redact(body, request.api_key.as_ref());
+        return Err(anyhow!("{status} — {}", crate::stt::describe_error(&body)));
     }
 
     let parsed: ChatResponse =

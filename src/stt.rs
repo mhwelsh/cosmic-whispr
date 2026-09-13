@@ -73,11 +73,11 @@ pub async fn transcribe(request: Request, wav: Vec<u8>) -> Result<String> {
         .context("cannot read the transcription response")?;
 
     if !status.is_success() {
-        return Err(anyhow!(
-            "{} — {}",
-            status,
-            redact(describe_error(&body), request.api_key.as_ref())
-        ));
+        // Scrub before anything trims. `describe_error` may truncate, and a
+        // key cut in half is a key the scanner no longer recognises while
+        // still being half a key on the screen.
+        let body = redact(body, request.api_key.as_ref());
+        return Err(anyhow!("{} — {}", status, describe_error(&body)));
     }
 
     parse_transcript(&body)
@@ -265,6 +265,23 @@ mod tests {
         );
         let clean = redact(describe_error(&body), Some(&key));
         assert_eq!(clean, "Incorrect API key provided: [redacted].");
+    }
+
+    /// Redaction has to come before truncation. A body long enough to be cut
+    /// mid-key would otherwise leave a fragment: too short for the scanner to
+    /// match, too long to be comfortable.
+    #[test]
+    fn a_key_near_the_truncation_boundary_still_goes() {
+        let key = ApiKey::new("sk-proj-abcdefghijklmnopqrstuvwxyz0123456789");
+        let body = format!("{}{}", "x".repeat(190), key.expose());
+
+        let scrubbed_first = describe_error(&redact(body.clone(), Some(&key)));
+        assert!(!scrubbed_first.contains("sk-proj"), "{scrubbed_first}");
+
+        // The order the code used to use, kept as the contrast: truncating
+        // first leaves the head of the key in the message.
+        let truncated_first = redact(describe_error(&body), Some(&key));
+        assert!(truncated_first.contains("sk-proj"), "{truncated_first}");
     }
 
     #[test]

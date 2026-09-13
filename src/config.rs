@@ -49,8 +49,9 @@ pub struct WhisprConfig {
     /// Delay between synthesized keystrokes. 0 is fastest; raise it if a
     /// target application drops characters.
     pub type_delay_ms: u64,
-    /// Append a space after each transcript, so dictating twice in a row
-    /// does not run the words together.
+    /// Append a space after each typed transcript, so dictating twice in a
+    /// row does not run the words together. Does not apply to a clipboard
+    /// copy, which has no neighbour to run into.
     pub trailing_space: bool,
     /// Hard cap on a single recording, as a runaway-microphone guard.
     pub max_seconds: u64,
@@ -137,9 +138,7 @@ impl WhisprConfig {
             Err(error) => tracing::warn!("{error:#}"),
         }
 
-        let key = std::env::var(API_KEY_ENV).ok()?;
-        let key = key.trim();
-        (!key.is_empty()).then(|| (ApiKey::new(key), format!("${API_KEY_ENV}")))
+        key_from_environment()
     }
 
     /// May the configured endpoint be trusted with the API key?
@@ -169,6 +168,14 @@ impl WhisprConfig {
     pub fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
     }
+}
+
+/// The fallback half of [`WhisprConfig::api_key_with_source`], split out so
+/// it can be exercised without a Secret Service to talk to.
+fn key_from_environment() -> Option<(ApiKey, String)> {
+    let key = std::env::var(API_KEY_ENV).ok()?;
+    let key = key.trim();
+    (!key.is_empty()).then(|| (ApiKey::new(key), format!("${API_KEY_ENV}")))
 }
 
 /// TLS, or a loopback address where there is no network to eavesdrop on.
@@ -228,23 +235,33 @@ mod tests {
         assert!(!endpoint_may_carry_key("not a url"));
     }
 
-    /// The regression this inversion exists to prevent: a variable left over
-    /// from another tool must never answer for a key that was just stored.
+    /// The regression the inverted precedence exists to prevent: a variable
+    /// left over from another tool must never answer for the applet.
+    ///
+    /// Deliberately tests `key_from_environment` rather than
+    /// `api_key_with_source`: the latter reaches the Secret Service, which
+    /// would make this pass or fail by what happens to be on the machine.
     #[test]
-    fn the_environment_never_shadows_a_stored_key() {
-        // SAFETY: the values are removed again below, and neither name is
-        // read by anything else in the test binary.
+    fn a_foreign_variable_is_never_read() {
+        // SAFETY: both names are restored below, and no other test in this
+        // binary reads either of them.
         unsafe { std::env::set_var("OPENAI_API_KEY", "sk-from-some-other-tool") };
-        let config = WhisprConfig::default();
+        unsafe { std::env::remove_var(API_KEY_ENV) };
+        assert!(key_from_environment().is_none());
 
-        // OPENAI_API_KEY is not consulted at all, whatever the keyring holds.
-        assert!(
-            config
-                .api_key_with_source()
-                .is_none_or(|(key, _)| key.expose() != "sk-from-some-other-tool")
-        );
+        unsafe { std::env::set_var(API_KEY_ENV, "sk-ours") };
+        let (key, source) = key_from_environment().expect("reads our own name");
+        assert_eq!(key.expose(), "sk-ours");
+        assert_eq!(source, "$COSMIC_WHISPR_API_KEY");
+
+        // Whitespace is not a key either. Folded into this test rather than
+        // given its own: tests share a process and run in parallel, so two
+        // of them setting the same variable would race.
+        unsafe { std::env::set_var(API_KEY_ENV, "   ") };
+        assert!(key_from_environment().is_none());
 
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
+        unsafe { std::env::remove_var(API_KEY_ENV) };
     }
 
     #[test]

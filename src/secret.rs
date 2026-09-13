@@ -65,6 +65,10 @@ const REFERENCE_SCHEME: &str = "op://";
 /// setup action, but a hung prompt should still not wedge the applet.
 const OP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Longer than any real key, short enough that a misdirected pipe is caught
+/// rather than stored. A current OpenAI project key is 164 characters.
+const LONGEST_PLAUSIBLE_KEY: usize = 1024;
+
 /// What the keyring holds, as far as the settings panel needs to know.
 ///
 /// Computed off the UI thread and cached: asking this question means talking
@@ -118,10 +122,28 @@ where
 }
 
 /// Save the key, replacing whatever was there.
+///
+/// Every route in — the settings box, `--set-key`, a 1Password import — ends
+/// here, so this is the one place worth checking that what arrived could
+/// plausibly be a key. Storing junk silently is the bad outcome: it looks
+/// like it worked, and the failure surfaces much later as an authentication
+/// error nobody connects back to this moment.
 pub fn store(key: &str) -> Result<()> {
     let key = Zeroizing::new(key.trim().to_string());
     if key.is_empty() {
         bail!("the API key is empty");
+    }
+    if key.len() > LONGEST_PLAUSIBLE_KEY {
+        bail!(
+            "that is {} characters long, which is not an API key — check what you piped in",
+            key.len()
+        );
+    }
+    if key.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        bail!(
+            "the API key contains whitespace, so it is probably more than the key — \
+             it should be a single token"
+        );
     }
 
     isolated(move || {
@@ -256,6 +278,21 @@ mod tests {
     fn refuses_to_store_an_empty_key() {
         let error = store("   ").unwrap_err().to_string();
         assert!(error.contains("empty"), "{error}");
+    }
+
+    #[test]
+    fn refuses_to_store_something_that_is_not_a_key() {
+        // A misdirected pipe: `--set-key < some-large-file`.
+        let error = store(&"x".repeat(LONGEST_PLAUSIBLE_KEY + 1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not an API key"), "{error}");
+
+        // A whole dotenv line, or two keys pasted at once.
+        for junk in ["OPENAI_API_KEY = sk-abc", "sk-one\nsk-two", "sk-with\ttab"] {
+            let error = store(junk).unwrap_err().to_string();
+            assert!(error.contains("whitespace"), "{junk:?} -> {error}");
+        }
     }
 
     #[test]
