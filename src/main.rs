@@ -55,8 +55,9 @@ after a rotation is just:
 
     cosmic-whispr --set-key-from
 
-$COSMIC_WHISPR_API_KEY (or $OPENAI_API_KEY) overrides the keyring when set,
-which is for trying a throwaway key without disturbing the saved one.
+$COSMIC_WHISPR_API_KEY is consulted only when the keyring has nothing to give,
+so the applet still works on a machine with no Secret Service running. The
+keyring always wins when it holds a key.
 ";
 
 fn main() -> cosmic::iced::Result {

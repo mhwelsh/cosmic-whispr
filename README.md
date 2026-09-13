@@ -96,9 +96,15 @@ an `op://` reference in the **From 1Password** box and press Fetch. Both write
 to the keyring; the reference is remembered in the config so re-importing after
 a rotation is one click. `cosmic-whispr --clear-key` forgets the key again.
 
-`$COSMIC_WHISPR_API_KEY` (or `$OPENAI_API_KEY`) still overrides the keyring
-when set. That is for trying a throwaway key without disturbing the saved one,
-not for everyday use.
+**The keyring always wins.** `$COSMIC_WHISPR_API_KEY` is consulted only when
+the keyring holds nothing or cannot be reached, so the applet still works on a
+machine with no Secret Service — headless, a minimal compositor, CI. It cannot
+shadow a key you saved, which is the point: otherwise a stale variable left
+over from some other tool would quietly outrank a key you had just rotated.
+
+`$OPENAI_API_KEY` is deliberately not read. That name is exported on half the
+developer machines in the world, and a variable meant for another tool
+answering for this one is a trap rather than a convenience.
 
 **The key only travels over HTTPS.** If `api_base` is plain `http://` to
 anything but a loopback address, the key is withheld rather than sent in the

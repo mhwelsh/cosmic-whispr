@@ -11,10 +11,15 @@ use serde::{Deserialize, Serialize};
 pub const APP_ID: &str = "dev.mhwelsh.CosmicWhispr";
 pub const CONFIG_VERSION: u64 = 1;
 
-/// Environment variables checked ahead of the keyring, as a debugging
-/// override — `COSMIC_WHISPR_API_KEY=sk-... cosmic-whispr` runs against a
-/// throwaway key without disturbing what is stored.
-pub const API_KEY_ENV: [&str; 2] = ["COSMIC_WHISPR_API_KEY", "OPENAI_API_KEY"];
+/// Consulted only when the keyring has nothing to give — a machine with no
+/// Secret Service running, which is how the applet stays usable headless and
+/// how the live tests get a key in CI.
+///
+/// Deliberately not `OPENAI_API_KEY`: that name is exported on half the
+/// developer machines in the world, and a variable meant for some other tool
+/// silently answering for this one is a trap. Nothing sets this name except
+/// somebody who typed it.
+pub const API_KEY_ENV: &str = "COSMIC_WHISPR_API_KEY";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
@@ -143,27 +148,25 @@ impl WhisprConfig {
         self.api_key_with_source().map(|(key, _)| key)
     }
 
-    /// Resolve the API key: the environment override first, then the
-    /// keyring. The second element describes the source, for `--check` to
-    /// report without printing the key.
+    /// Resolve the API key: the keyring first, and only then the
+    /// environment. The second element describes the source, for `--check`
+    /// to report without printing the key.
+    ///
+    /// The keyring wins deliberately. An environment variable that outranked
+    /// it could shadow the key you deliberately stored — rotating with
+    /// `--set-key-from` would report success, the keyring would genuinely
+    /// hold the new key, and the applet would keep sending the old one. As a
+    /// fallback it cannot do that, while still covering the case it is
+    /// actually for: no Secret Service to talk to.
     pub fn api_key_with_source(&self) -> Option<(String, String)> {
-        for name in API_KEY_ENV {
-            if let Ok(key) = std::env::var(name) {
-                let key = key.trim().to_string();
-                if !key.is_empty() {
-                    return Some((key, format!("${name}")));
-                }
-            }
+        match secret::load() {
+            Ok(Some(key)) => return Some((key, "the keyring".to_string())),
+            Ok(None) => {}
+            Err(error) => tracing::warn!("{error:#}"),
         }
 
-        match secret::load() {
-            Ok(Some(key)) => Some((key, "the keyring".to_string())),
-            Ok(None) => None,
-            Err(error) => {
-                tracing::warn!("{error:#}");
-                None
-            }
-        }
+        let key = std::env::var(API_KEY_ENV).ok()?.trim().to_string();
+        (!key.is_empty()).then(|| (key, format!("${API_KEY_ENV}")))
     }
 
     /// May the configured endpoint be trusted with the API key?
@@ -250,6 +253,25 @@ mod tests {
         assert!(!endpoint_may_carry_key(""));
         assert!(!endpoint_may_carry_key("api.openai.com/v1"));
         assert!(!endpoint_may_carry_key("not a url"));
+    }
+
+    /// The regression this inversion exists to prevent: a variable left over
+    /// from another tool must never answer for a key that was just stored.
+    #[test]
+    fn the_environment_never_shadows_a_stored_key() {
+        // SAFETY: the values are removed again below, and neither name is
+        // read by anything else in the test binary.
+        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-from-some-other-tool") };
+        let config = WhisprConfig::default();
+
+        // OPENAI_API_KEY is not consulted at all, whatever the keyring holds.
+        assert!(
+            config
+                .api_key_with_source()
+                .is_none_or(|(key, _)| key != "sk-from-some-other-tool")
+        );
+
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
     }
 
     #[test]
