@@ -18,33 +18,83 @@ use cosmic::iced::stream;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+/// Where a finished transcript goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Delivery {
+    /// Synthesize keystrokes into whatever window has focus.
+    #[default]
+    Type,
+    /// Put it on the clipboard and leave the focused window alone, for
+    /// dictating somewhere that typing into would be wrong — a password
+    /// field, a terminal, someone else's chat window.
+    Clipboard,
+}
+
+impl Delivery {
+    fn parse(word: &str) -> Option<Self> {
+        match word {
+            "type" => Some(Self::Type),
+            "clipboard" => Some(Self::Clipboard),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Type => "type",
+            Self::Clipboard => "clipboard",
+        }
+    }
+}
+
+/// A command from a keyboard shortcut.
+///
+/// The delivery is optional so that the two presses of a toggle need not
+/// agree: the press that starts a recording chooses where the transcript
+/// goes, and a later press only changes that if it says so explicitly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     /// Record if idle, otherwise stop and transcribe.
-    Toggle,
-    Start,
-    Stop,
+    Toggle(Option<Delivery>),
+    Start(Option<Delivery>),
+    Stop(Option<Delivery>),
     /// Stop and discard, for when you misspeak.
     Cancel,
 }
 
 impl Command {
+    /// `"toggle"`, or `"toggle clipboard"`. A bare verb keeps working, which
+    /// is what a shortcut bound before delivery modes existed still sends.
     pub fn parse(line: &str) -> Option<Self> {
-        match line.trim() {
-            "toggle" => Some(Self::Toggle),
-            "start" => Some(Self::Start),
-            "stop" => Some(Self::Stop),
-            "cancel" => Some(Self::Cancel),
+        let mut words = line.split_whitespace();
+        let verb = words.next()?;
+        let delivery = match words.next() {
+            Some(word) => Some(Delivery::parse(word)?),
+            None => None,
+        };
+        if words.next().is_some() {
+            return None;
+        }
+
+        match verb {
+            "toggle" => Some(Self::Toggle(delivery)),
+            "start" => Some(Self::Start(delivery)),
+            "stop" => Some(Self::Stop(delivery)),
+            "cancel" if delivery.is_none() => Some(Self::Cancel),
             _ => None,
         }
     }
 
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Toggle => "toggle",
-            Self::Start => "start",
-            Self::Stop => "stop",
-            Self::Cancel => "cancel",
+    pub fn encode(self) -> String {
+        let (verb, delivery) = match self {
+            Self::Toggle(delivery) => ("toggle", delivery),
+            Self::Start(delivery) => ("start", delivery),
+            Self::Stop(delivery) => ("stop", delivery),
+            Self::Cancel => ("cancel", None),
+        };
+        match delivery {
+            Some(delivery) => format!("{verb} {}", delivery.as_str()),
+            None => verb.to_string(),
         }
     }
 }
@@ -118,7 +168,7 @@ pub fn send(command: Command) -> Result<()> {
         )
     })?;
     stream
-        .write_all(format!("{}\n", command.as_str()).as_bytes())
+        .write_all(format!("{}\n", command.encode()).as_bytes())
         .context("cannot send the command")?;
     stream.flush().context("cannot flush the command")
 }
@@ -204,20 +254,41 @@ mod tests {
 
     #[test]
     fn parses_known_commands() {
-        assert_eq!(Command::parse("toggle\n"), Some(Command::Toggle));
+        assert_eq!(Command::parse("toggle\n"), Some(Command::Toggle(None)));
         assert_eq!(Command::parse("  cancel  "), Some(Command::Cancel));
         assert_eq!(Command::parse("explode"), None);
     }
 
     #[test]
-    fn command_names_round_trip() {
+    fn parses_a_delivery_mode() {
+        assert_eq!(
+            Command::parse("toggle clipboard"),
+            Some(Command::Toggle(Some(Delivery::Clipboard)))
+        );
+        assert_eq!(
+            Command::parse("stop type\n"),
+            Some(Command::Stop(Some(Delivery::Type)))
+        );
+    }
+
+    #[test]
+    fn rejects_nonsense_around_a_known_verb() {
+        assert_eq!(Command::parse("toggle sideways"), None);
+        assert_eq!(Command::parse("toggle clipboard extra"), None);
+        assert_eq!(Command::parse("cancel clipboard"), None);
+        assert_eq!(Command::parse(""), None);
+    }
+
+    #[test]
+    fn commands_round_trip() {
         for command in [
-            Command::Toggle,
-            Command::Start,
-            Command::Stop,
+            Command::Toggle(None),
+            Command::Toggle(Some(Delivery::Clipboard)),
+            Command::Start(Some(Delivery::Type)),
+            Command::Stop(Some(Delivery::Clipboard)),
             Command::Cancel,
         ] {
-            assert_eq!(Command::parse(command.as_str()), Some(command));
+            assert_eq!(Command::parse(&command.encode()), Some(command));
         }
     }
 

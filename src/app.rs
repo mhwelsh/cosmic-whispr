@@ -42,6 +42,7 @@ enum Status {
     Starting,
     Recording,
     Transcribing,
+    /// Delivering the transcript, by whichever route was chosen.
     Typing,
 }
 
@@ -103,6 +104,12 @@ pub struct Whispr {
     key_status: secret::Status,
     /// A key operation is in flight; the buttons stay inert until it lands.
     key_busy: bool,
+    /// Where the transcript in flight is headed. Chosen when the recording
+    /// starts, so the shortcut you press to begin decides.
+    delivery: ipc::Delivery,
+    /// Transient confirmation for a delivery that leaves nothing on screen —
+    /// a clipboard copy types nothing, so it needs to say so somewhere.
+    notice: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -190,6 +197,8 @@ impl cosmic::Application for Whispr {
             key_hidden: true,
             key_status: secret::Status::Empty,
             key_busy: false,
+            delivery: ipc::Delivery::default(),
+            notice: None,
         };
 
         (applet, refresh_key_status())
@@ -241,7 +250,10 @@ impl cosmic::Application for Whispr {
             }
             Message::Toggle => return self.toggle(),
             Message::Cancel => self.reset(None),
-            Message::DismissError => self.error = None,
+            Message::DismissError => {
+                self.error = None;
+                self.notice = None;
+            }
 
             Message::RecordingReady(Ok(device)) => {
                 tracing::info!(%device, "recording");
@@ -265,7 +277,7 @@ impl cosmic::Application for Whispr {
                     self.reset(Some("nothing was recognized".into()));
                 } else {
                     self.status = Status::Typing;
-                    return self.type_out(transcript);
+                    return self.deliver(transcript);
                 }
             }
             Message::Transcribed(Err(error)) => self.reset(Some(error)),
@@ -358,7 +370,7 @@ impl cosmic::Application for Whispr {
         let tooltip = match self.status {
             Status::Idle => "Click to dictate, right-click for settings".to_string(),
             Status::Recording => format!("Recording — {}", format_duration(self.elapsed)),
-            other => other.label().to_string(),
+            _ => self.status_label().to_string(),
         };
 
         let tooltip = self.core.applet.applet_tooltip::<Message>(
@@ -426,13 +438,24 @@ impl Whispr {
 
     fn handle_control(&mut self, command: ipc::Command) -> Task<Message> {
         match command {
-            ipc::Command::Toggle => self.toggle(),
-            ipc::Command::Start => match self.status {
-                Status::Idle => self.start(),
+            ipc::Command::Toggle(delivery) => self.toggle_with(delivery),
+            ipc::Command::Start(delivery) => match self.status {
+                Status::Idle => {
+                    self.delivery = delivery.unwrap_or_default();
+                    self.start()
+                }
                 _ => Task::none(),
             },
-            ipc::Command::Stop => match self.status {
-                Status::Starting | Status::Recording => self.stop(),
+            ipc::Command::Stop(delivery) => match self.status {
+                Status::Starting | Status::Recording => {
+                    // Only an explicit mode overrides what the start chose,
+                    // so stopping with the other shortcut by accident does
+                    // not redirect the transcript.
+                    if let Some(delivery) = delivery {
+                        self.delivery = delivery;
+                    }
+                    self.stop()
+                }
                 _ => Task::none(),
             },
             ipc::Command::Cancel => {
@@ -442,10 +465,23 @@ impl Whispr {
         }
     }
 
+    /// Toggle from the panel button, which always types.
     fn toggle(&mut self) -> Task<Message> {
+        self.toggle_with(Some(ipc::Delivery::Type))
+    }
+
+    fn toggle_with(&mut self, delivery: Option<ipc::Delivery>) -> Task<Message> {
         match self.status {
-            Status::Idle => self.start(),
-            Status::Starting | Status::Recording => self.stop(),
+            Status::Idle => {
+                self.delivery = delivery.unwrap_or_default();
+                self.start()
+            }
+            Status::Starting | Status::Recording => {
+                if let Some(delivery) = delivery {
+                    self.delivery = delivery;
+                }
+                self.stop()
+            }
             // Ignore a toggle that lands mid-transcription rather than
             // queueing a second recording behind it.
             Status::Transcribing | Status::Typing => Task::none(),
@@ -454,6 +490,7 @@ impl Whispr {
 
     fn start(&mut self) -> Task<Message> {
         self.error = None;
+        self.notice = None;
         self.meter = 0.0;
         self.elapsed = Duration::ZERO;
         self.status = Status::Starting;
@@ -553,11 +590,23 @@ impl Whispr {
         )
     }
 
-    fn type_out(&mut self, transcript: String) -> Task<Message> {
+    /// Send the transcript wherever this recording was headed.
+    fn deliver(&mut self, transcript: String) -> Task<Message> {
         let mut text = transcript;
         if self.config.trailing_space {
             text.push(' ');
         }
+
+        if self.delivery == ipc::Delivery::Clipboard {
+            // Nothing is typed, so nothing on screen would otherwise show
+            // that the dictation worked.
+            self.notice = Some("Copied to clipboard".to_string());
+            return Task::batch([
+                cosmic::iced::clipboard::write(text),
+                cosmic::task::message(cosmic::Action::App(Message::Typed(Ok(())))),
+            ]);
+        }
+
         let delay = Duration::from_millis(self.config.type_delay_ms);
 
         Task::perform(
@@ -622,6 +671,12 @@ impl Whispr {
             ));
         }
 
+        if let Some(notice) = &self.notice {
+            content = content.push(cosmic::applet::padded_control(
+                text::caption(notice.clone()).width(Length::Fill),
+            ));
+        }
+
         if !self.last_transcript.is_empty() {
             content = content.push(cosmic::applet::padded_control(text::caption(
                 self.last_transcript.clone(),
@@ -640,6 +695,14 @@ impl Whispr {
         content.into()
     }
 
+    /// `Status::label`, corrected for a delivery that does no typing.
+    fn status_label(&self) -> &'static str {
+        match (self.status, self.delivery) {
+            (Status::Typing, ipc::Delivery::Clipboard) => "Copying…",
+            (status, _) => status.label(),
+        }
+    }
+
     fn status_row(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
         let label = match self.status {
@@ -648,7 +711,7 @@ impl Whispr {
                 self.status.label(),
                 format_duration(self.elapsed)
             ),
-            other => other.label().to_string(),
+            _ => self.status_label().to_string(),
         };
 
         let mut children = row::with_capacity(2)

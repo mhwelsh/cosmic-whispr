@@ -26,6 +26,9 @@ USAGE:
     cosmic-whispr --start         Start recording
     cosmic-whispr --stop          Stop recording and transcribe
     cosmic-whispr --cancel        Stop recording and discard
+
+    --toggle, --start and --stop take --clipboard or --type, choosing where
+    the transcript goes. Typing into the focused window is the default.
     cosmic-whispr --list-devices  Print available input devices
     cosmic-whispr --check         Report configuration and capabilities
     cosmic-whispr --type-test     Type a test phrase into the focused window
@@ -39,6 +42,17 @@ SETTING THE API KEY:
 Bind --toggle to a keyboard shortcut in COSMIC Settings: clicking the panel
 icon moves keyboard focus to the panel, while a shortcut leaves focus in the
 window you are dictating into.
+
+Two shortcuts make both delivery modes reachable — say Super+D for
+
+    cosmic-whispr --toggle
+
+and Super+Shift+D for
+
+    cosmic-whispr --toggle --clipboard
+
+which copies instead of typing, for dictating somewhere that keystrokes would
+go to the wrong place. The press that starts a recording picks the mode.
 
 The API key lives in the Secret Service keyring, and nowhere else. Paste it
 into the settings popup, or pipe it in so it never reaches your shell history:
@@ -78,9 +92,9 @@ fn main() -> cosmic::iced::Result {
             }
             cosmic::applet::run::<app::Whispr>(())
         }
-        Some("--toggle") => send(ipc::Command::Toggle),
-        Some("--start") => send(ipc::Command::Start),
-        Some("--stop") => send(ipc::Command::Stop),
+        Some("--toggle") => send(ipc::Command::Toggle(delivery(&mut arguments))),
+        Some("--start") => send(ipc::Command::Start(delivery(&mut arguments))),
+        Some("--stop") => send(ipc::Command::Stop(delivery(&mut arguments))),
         Some("--cancel") => send(ipc::Command::Cancel),
         Some("--check") => {
             check();
@@ -105,6 +119,23 @@ fn main() -> cosmic::iced::Result {
         }
         Some(unknown) => {
             eprintln!("cosmic-whispr: unknown argument {unknown:?}\n");
+            print!("{HELP}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Read the delivery flag that may follow a control argument.
+///
+/// Absent means "whatever the recording already chose", which is what lets
+/// the two presses of a toggle disagree harmlessly.
+fn delivery(arguments: &mut impl Iterator<Item = String>) -> Option<ipc::Delivery> {
+    match arguments.next().as_deref() {
+        None => None,
+        Some("--clipboard") => Some(ipc::Delivery::Clipboard),
+        Some("--type") => Some(ipc::Delivery::Type),
+        Some(unknown) => {
+            eprintln!("cosmic-whispr: expected --clipboard or --type, got {unknown:?}\n");
             print!("{HELP}");
             std::process::exit(2);
         }

@@ -170,6 +170,25 @@ to stop; the transcript is typed where your cursor already is.
 **Left-click the icon to start and stop dictating; right-click for the popup**
 with status, settings, and the last transcript.
 
+### Typing or the clipboard
+
+By default the transcript is typed into whatever window has focus. Sometimes
+that is the wrong place — a password field, a terminal with a half-written
+command, someone else's chat window — so `--toggle`, `--start` and `--stop`
+also take `--clipboard`, which copies instead and leaves focus alone.
+
+Two shortcuts make both reachable:
+
+| Shortcut | Command | Effect |
+| --- | --- | --- |
+| Super+D | `cosmic-whispr --toggle` | Type into the focused window |
+| Super+Shift+D | `cosmic-whispr --toggle --clipboard` | Copy, then paste it yourself |
+
+The press that *starts* a recording picks where the transcript goes, so you
+decide before you speak rather than after. Stopping with the other shortcut
+does not redirect it — only an explicit `--clipboard` or `--type` on the
+stopping press does that. The panel button always types.
+
 A keyboard shortcut still beats both, and is worth binding: a left click lands
 on the panel rather than the window you are dictating into, and while COSMIC
 returns focus afterwards, a shortcut never moves it in the first place.
