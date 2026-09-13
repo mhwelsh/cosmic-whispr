@@ -196,7 +196,9 @@ protocols, which need no serial, and keeps a process alive to serve the data.
 The press that *starts* a recording picks where the transcript goes, so you
 decide before you speak rather than after. Stopping with the other shortcut
 does not redirect it — only an explicit `--clipboard` or `--type` on the
-stopping press does that. The panel button always types.
+stopping press does that — including the panel button, which asks for typing
+only when it is the press that starts. Left-clicking the icon to stop a
+recording you began with the clipboard shortcut still copies.
 
 A keyboard shortcut still beats both, and is worth binding: a left click lands
 on the panel rather than the window you are dictating into, and while COSMIC

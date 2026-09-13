@@ -19,7 +19,7 @@ use cosmic::widget::{
 use cosmic::{Element, cosmic_config};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::config::{APP_ID, WhisprConfig};
+use crate::config::{self, APP_ID, WhisprConfig};
 use crate::{audio, cleanup, clipboard, ipc, secret, stt, typer};
 
 /// How often the level meter and elapsed timer refresh while recording.
@@ -88,6 +88,10 @@ pub struct Whispr {
     device_labels: Vec<String>,
     can_type: bool,
     can_copy: bool,
+    /// Whether the environment supplies a key. Read once: it cannot change
+    /// under a running process, and the withheld-key warning needs to know
+    /// about a key the keyring never saw.
+    key_in_environment: bool,
     /// What the user has typed into the API key box. Deliberately transient:
     /// it is wiped the moment the key reaches the keyring, and is never
     /// written to the config.
@@ -203,6 +207,7 @@ impl cosmic::Application for Whispr {
             devices,
             can_type,
             can_copy,
+            key_in_environment: config::key_from_environment().is_some(),
             key_input: Zeroizing::new(String::new()),
             key_hidden: true,
             key_status: secret::Status::Empty,
@@ -745,9 +750,9 @@ impl Whispr {
         // A key that will not be sent is worth saying out loud. Otherwise the
         // status line reads "Stored in the keyring", the endpoint is right
         // there in the same popup, and the only symptom is an unexplained 401.
-        if matches!(self.key_status, secret::Status::Stored { .. })
-            && !self.config.endpoint_may_carry_key()
-        {
+        let have_key =
+            matches!(self.key_status, secret::Status::Stored { .. }) || self.key_in_environment;
+        if have_key && !self.config.endpoint_may_carry_key() {
             content = content.push(cosmic::applet::padded_control(text::caption(
                 "The endpoint is neither HTTPS nor a loopback address, so the \
                  API key is not being sent with it.",

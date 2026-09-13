@@ -40,8 +40,8 @@ pub fn copy(text: &str) -> Result<()> {
         bail!("there is nothing to copy");
     }
 
-    // stderr is discarded rather than captured, which costs a diagnostic and
-    // buys the function returning at all. `wl-copy` forks a process to serve
+    // `wait` rather than `wait_with_output`, and stderr discarded rather than
+    // captured: both because this must return at all. `wl-copy` forks a process to serve
     // the selection, and that process inherits whatever pipes we hand it — so
     // reading its output to end-of-file, which is what `wait_with_output`
     // does, waits for a writer that stays alive until the selection is
@@ -68,15 +68,25 @@ pub fn copy(text: &str) -> Result<()> {
         .stdin
         .take()
         .ok_or_else(|| anyhow!("wl-copy did not offer a stdin pipe"))?;
-    stdin
-        .write_all(text.as_bytes())
-        .context("cannot hand the transcript to wl-copy")?;
+    let written = stdin.write_all(text.as_bytes());
     drop(stdin);
 
-    // `wait`, not `wait_with_output`: this waits for the parent to exit,
-    // which it does as soon as it has forked the server, and never touches
-    // the inherited pipes.
+    // Reaped even when the write failed. `Child::drop` does not wait on Unix,
+    // so an early return here would leave a zombie behind for the life of the
+    // applet — which is the whole session, and one per failed dictation.
     let status = child.wait().context("cannot wait for wl-copy")?;
+
+    if let Err(error) = written {
+        // Broken pipe means it exited before reading the text, which usually
+        // means it could not reach the display at all. Say that, because its
+        // own explanation went to /dev/null to keep this function returning.
+        return Err(anyhow!(error)).context(
+            "wl-copy stopped before taking the transcript — check that it can \
+             reach the Wayland display, and that the compositor offers the \
+             data-control protocol",
+        );
+    }
+
     if !status.success() {
         bail!("wl-copy failed with {status}");
     }

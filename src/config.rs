@@ -158,15 +158,20 @@ impl WhisprConfig {
 
     /// `{api_base}/audio/transcriptions`, tolerating a trailing slash.
     pub fn transcription_url(&self) -> String {
-        format!(
-            "{}/audio/transcriptions",
-            self.api_base.trim_end_matches('/')
-        )
+        format!("{}/audio/transcriptions", self.base())
+    }
+
+    /// `api_base` as a URL prefix: trimmed the same way
+    /// [`endpoint_may_carry_key`] trims it, so the check and the request can
+    /// never disagree about what the endpoint is. A leading space used to
+    /// pass the check and then fail to parse.
+    fn base(&self) -> &str {
+        self.api_base.trim().trim_end_matches('/')
     }
 
     /// `{api_base}/chat/completions`, for the cleanup pass.
     pub fn chat_url(&self) -> String {
-        format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
+        format!("{}/chat/completions", self.base())
     }
 }
 
@@ -215,6 +220,23 @@ pub fn endpoint_may_carry_key(api_base: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_padded_endpoint_builds_a_url_that_parses() {
+        // The check trims, so the request has to trim identically or a stray
+        // space passes the gate and then fails to reach anything.
+        let config = WhisprConfig {
+            api_base: "  https://api.openai.com/v1/  ".into(),
+            ..WhisprConfig::default()
+        };
+        assert!(config.endpoint_may_carry_key());
+        assert_eq!(
+            config.transcription_url(),
+            "https://api.openai.com/v1/audio/transcriptions"
+        );
+        assert!(reqwest::Url::parse(&config.transcription_url()).is_ok());
+        assert_eq!(config.chat_url(), "https://api.openai.com/v1/chat/completions");
+    }
 
     #[test]
     fn https_endpoints_may_carry_the_key() {

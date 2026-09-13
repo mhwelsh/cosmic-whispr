@@ -8,6 +8,7 @@
 //! [`store`]. `op` never runs while a transcript is in flight.
 
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -114,11 +115,19 @@ fn entry() -> Result<Entry> {
     // has claimed `org.freedesktop.secrets`, and a failure cached at that
     // moment would report "keyring unavailable" for every dictation until the
     // next login, long after the daemon was ready.
-    if keyring_core::get_default_store().is_none() {
-        let store = zbus_secret_service_keyring_store::Store::new()
-            .map_err(|error| anyhow!(error))
-            .context("cannot reach the Secret Service keyring")?;
-        keyring_core::set_default_store(store);
+    // Under a mutex because the check and the set have to be one step. Every
+    // keyring call gets its own thread, so two of them — a popup opening
+    // while a dictation resolves its key — could both find no store, both
+    // open a D-Bus connection, and both install one, orphaning the loser's.
+    static CONNECTING: Mutex<()> = Mutex::new(());
+    {
+        let _guard = CONNECTING.lock().unwrap_or_else(|error| error.into_inner());
+        if keyring_core::get_default_store().is_none() {
+            let store = zbus_secret_service_keyring_store::Store::new()
+                .map_err(|error| anyhow!(error))
+                .context("cannot reach the Secret Service keyring")?;
+            keyring_core::set_default_store(store);
+        }
     }
 
     Entry::new(APP_ID, ACCOUNT)
@@ -246,10 +255,31 @@ pub fn read_reference(reference: &str) -> Result<Zeroizing<String>> {
             _ => anyhow!("cannot run `op read`: {error}"),
         })?;
 
+    // Drained on threads of their own while we poll. Reading only after the
+    // child exits deadlocks if it ever writes more than a pipe buffer — a
+    // verbose auth failure on stderr is enough — because it blocks on the
+    // write, never exits, and we sit out the whole timeout blaming 1Password.
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(pipe, &mut buffer);
+        }
+        buffer
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(pipe, &mut buffer);
+        }
+        buffer
+    });
+
     let deadline = Instant::now() + OP_TIMEOUT;
-    loop {
+    let status = loop {
         match child.try_wait().context("cannot wait for `op read`")? {
-            Some(_) => break,
+            Some(status) => break status,
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -261,24 +291,28 @@ pub fn read_reference(reference: &str) -> Result<Zeroizing<String>> {
             }
             None => std::thread::sleep(Duration::from_millis(50)),
         }
-    }
+    };
 
-    let output = child
-        .wait_with_output()
-        .context("cannot read the output of `op read`")?;
-    if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr);
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| anyhow!("the `op read` output reader panicked"))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow!("the `op read` error reader panicked"))?;
+
+    if !status.success() {
+        let message = String::from_utf8_lossy(&stderr);
         let message = message.trim();
         bail!(if message.is_empty() {
-            format!("`op read` failed with {}", output.status)
+            format!("`op read` failed with {status}")
         } else {
             message.to_string()
         });
     }
 
-    // The child's stdout buffer holds the secret; wipe it along with the
-    // string built from it.
-    let stdout = Zeroizing::new(output.stdout);
+    // The buffer holds the secret; wipe it along with the string built
+    // from it.
+    let stdout = Zeroizing::new(stdout);
     let key = Zeroizing::new(
         std::str::from_utf8(&stdout)
             .context("`op read` returned invalid UTF-8")?

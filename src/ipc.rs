@@ -22,6 +22,14 @@ use tokio::net::{UnixListener, UnixStream};
 /// Longest command we will read. The longest real one is "toggle clipboard".
 const LONGEST_COMMAND: u64 = 64;
 
+/// How long to wait before trying the socket again, and the ceiling that
+/// backoff climbs to. A failure here is often transient — the runtime
+/// directory not created yet at login, a stale directory from a previous
+/// boot — and parking forever would mean every keyboard shortcut is dead for
+/// the session over something that fixed itself seconds later.
+const RETRY_DELAY: Duration = Duration::from_secs(1);
+const RETRY_CEILING: Duration = Duration::from_secs(30);
+
 /// A client that connects and then says nothing gets this long to speak.
 ///
 /// Connections are read one at a time, on purpose. Reading each on its own
@@ -232,37 +240,23 @@ pub fn listen() -> Subscription<Command> {
         stream::channel(
             8,
             |mut output: cosmic::iced::futures::channel::mpsc::Sender<Command>| async move {
-                let dir = socket_dir();
-                if let Err(error) = prepare_socket_dir(&dir) {
-                    tracing::warn!("control socket unavailable: {error:#}");
-                    // Stay pending rather than ending the subscription, which
-                    // iced would otherwise restart in a tight loop.
-                    std::future::pending::<()>().await;
-                    unreachable!();
-                }
-
-                let path = dir.join(SOCKET_NAME);
-                // A socket left behind by a crashed instance would block bind.
-                let _ = std::fs::remove_file(&path);
-
-                let listener = match UnixListener::bind(&path) {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        tracing::warn!(path = %path.display(), %error, "control socket unavailable");
-                        // Stay pending rather than ending the subscription, which
-                        // iced would otherwise restart in a tight loop.
-                        std::future::pending::<()>().await;
-                        unreachable!();
+                // Retried rather than given up on, and backed off rather
+                // than spun: returning would have iced restart the
+                // subscription in a tight loop.
+                let mut delay = RETRY_DELAY;
+                let (listener, path) = loop {
+                    match bind_socket() {
+                        Ok(bound) => break bound,
+                        Err(error) => {
+                            tracing::warn!(
+                                "control socket unavailable, retrying in {}s: {error:#}",
+                                delay.as_secs()
+                            );
+                            tokio::time::sleep(delay).await;
+                            delay = (delay * 2).min(RETRY_CEILING);
+                        }
                     }
                 };
-                // The directory already keeps others out; narrowing the socket
-                // itself means a permissive umask cannot widen it either.
-                if let Err(error) =
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                {
-                    tracing::warn!(path = %path.display(), %error, "cannot restrict the control socket");
-                }
-
                 tracing::info!(path = %path.display(), "listening for control commands");
 
                 loop {
@@ -281,6 +275,27 @@ pub fn listen() -> Subscription<Command> {
             },
         )
     })
+}
+
+/// Prepare the directory and bind the socket inside it.
+fn bind_socket() -> Result<(UnixListener, PathBuf)> {
+    let dir = socket_dir();
+    prepare_socket_dir(&dir)?;
+
+    let path = dir.join(SOCKET_NAME);
+    // A socket left behind by a crashed instance would block bind.
+    let _ = std::fs::remove_file(&path);
+
+    let listener = UnixListener::bind(&path)
+        .with_context(|| format!("cannot bind {}", path.display()))?;
+
+    // The directory already keeps others out; narrowing the socket itself
+    // means a permissive umask cannot widen it either.
+    if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+        tracing::warn!(path = %path.display(), %error, "cannot restrict the control socket");
+    }
+
+    Ok((listener, path))
 }
 
 async fn read_command(connection: UnixStream) -> Option<Command> {

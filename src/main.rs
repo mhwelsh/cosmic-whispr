@@ -86,24 +86,41 @@ fn main() -> cosmic::iced::Result {
         .init();
 
     let mut arguments = std::env::args().skip(1);
-    match arguments.next().as_deref() {
+    let first = arguments.next();
+    match first.as_deref() {
         None => cosmic::applet::run::<app::Whispr>(()),
         Some("--toggle") => send(ipc::Command::Toggle(delivery(&mut arguments))),
         Some("--start") => send(ipc::Command::Start(delivery(&mut arguments))),
         Some("--stop") => send(ipc::Command::Stop(delivery(&mut arguments))),
-        Some("--cancel") => send(ipc::Command::Cancel),
+        Some("--cancel") => {
+            no_more(&mut arguments);
+            send(ipc::Command::Cancel)
+        }
         Some("--check") => {
+            no_more(&mut arguments);
             check();
             Ok(())
         }
-        Some("--set-key") => set_key(),
-        Some("--set-key-from") => set_key_from(arguments.next()),
-        Some("--clear-key") => clear_key(),
+        Some("--set-key") => {
+            no_more(&mut arguments);
+            set_key()
+        }
+        Some("--set-key-from") => {
+            let reference = arguments.next();
+            no_more(&mut arguments);
+            set_key_from(reference)
+        }
+        Some("--clear-key") => {
+            no_more(&mut arguments);
+            clear_key()
+        }
         Some("--type-test") => {
+            no_more(&mut arguments);
             type_test();
             Ok(())
         }
         Some("--list-devices") => {
+            no_more(&mut arguments);
             for name in audio::input_devices() {
                 println!("{name}");
             }
@@ -118,6 +135,18 @@ fn main() -> cosmic::iced::Result {
             print!("{HELP}");
             std::process::exit(2);
         }
+    }
+}
+
+/// Reject anything left on the command line.
+///
+/// Applied to every subcommand, not just the ones that take a flag: the same
+/// typo should not be fatal in one place and silently ignored in another.
+fn no_more(arguments: &mut impl Iterator<Item = String>) {
+    if let Some(extra) = arguments.next() {
+        eprintln!("cosmic-whispr: unexpected argument {extra:?}\n");
+        print!("{HELP}");
+        std::process::exit(2);
     }
 }
 
@@ -148,11 +177,7 @@ fn delivery(arguments: &mut impl Iterator<Item = String>) -> Option<ipc::Deliver
 
     // Say so rather than ignoring it: a dropped argument looks like it
     // worked, which is the worst way for a typo to behave.
-    if let Some(extra) = arguments.next() {
-        eprintln!("cosmic-whispr: unexpected argument {extra:?}\n");
-        print!("{HELP}");
-        std::process::exit(2);
-    }
+    no_more(arguments);
 
     delivery
 }
