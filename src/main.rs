@@ -84,14 +84,7 @@ fn main() -> cosmic::iced::Result {
 
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
-        None => {
-            // An older version kept the key in the config file; move it into
-            // the keyring before the applet can read either.
-            if let (Some(handle), _) = config::WhisprConfig::load() {
-                config::WhisprConfig::migrate_plaintext_key(&handle);
-            }
-            cosmic::applet::run::<app::Whispr>(())
-        }
+        None => cosmic::applet::run::<app::Whispr>(()),
         Some("--toggle") => send(ipc::Command::Toggle(delivery(&mut arguments))),
         Some("--start") => send(ipc::Command::Start(delivery(&mut arguments))),
         Some("--stop") => send(ipc::Command::Stop(delivery(&mut arguments))),

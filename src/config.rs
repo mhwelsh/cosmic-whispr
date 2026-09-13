@@ -101,34 +101,6 @@ impl WhisprConfig {
         }
     }
 
-    /// Move a key left behind by an older version, which kept it in plain
-    /// text in the config file, into the keyring and blank the old entry.
-    ///
-    /// cosmic-config has no "remove", so blanking is the erase. Failures are
-    /// logged and otherwise ignored: the worst case is pasting the key again.
-    pub fn migrate_plaintext_key(handle: &Config) {
-        use cosmic_config::{ConfigGet, ConfigSet};
-
-        let Ok(key) = handle.get::<String>("api_key") else {
-            return;
-        };
-        if key.trim().is_empty() {
-            return;
-        }
-
-        match secret::store(&key) {
-            Ok(()) => {
-                if let Err(error) = handle.set("api_key", String::new()) {
-                    tracing::warn!(%error, "moved the API key to the keyring but could not \
-                                            clear the old plain-text copy");
-                } else {
-                    tracing::info!("moved the API key out of the config file into the keyring");
-                }
-            }
-            Err(error) => tracing::warn!("{error:#}"),
-        }
-    }
-
     /// Resolve the API key for the configured endpoint.
     ///
     /// Returns `None` when the endpoint has not earned it — see
