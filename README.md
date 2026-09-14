@@ -9,14 +9,14 @@ whisper.cpp or faster-whisper server.
 
 ## Install
 
-Arch and derivatives:
+Arch and derivatives, with the bundled PKGBUILD:
 
 ```sh
-paru -S cosmic-whispr            # once published to the AUR
-cd packaging/aur && makepkg -si  # or build the PKGBUILD directly
+git clone https://github.com/mhwelsh/cosmic-whispr
+cd cosmic-whispr/packaging/aur && makepkg -si
 ```
 
-From source, with a Rust toolchain and ALSA headers:
+Anywhere else, from source, with a Rust toolchain and ALSA headers:
 
 ```sh
 git clone https://github.com/mhwelsh/cosmic-whispr
@@ -24,7 +24,7 @@ cd cosmic-whispr
 just install
 ```
 
-Then add **Whispr Dictation** in *Settings → Desktop → Panel → Applets*.
+Either way, add **Whispr Dictation** in *Settings → Desktop → Panel → Applets*.
 
 ## Set the API key
 
